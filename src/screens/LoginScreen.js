@@ -139,7 +139,7 @@ const LoginScreen = ({ navigation }) => {
         {/* Logo */}
         <View style={styles.logoContainer}>
           <Image 
-            source={require('../../assets/logo.png')} 
+            source={require('../../assets/protrader_logo2.png')} 
             style={styles.logoImage}
             resizeMode="contain"
           />
