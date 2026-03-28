@@ -134,7 +134,7 @@ const BuyChallengeScreen = ({ navigation }) => {
         Alert.alert('Success', 'Challenge purchased successfully!', [
           { text: 'OK', onPress: () => {
             // Navigate back and trigger refresh of challenge accounts
-            navigation.navigate('Accounts', { refreshChallengeAccounts: true });
+            navigation.navigate('MainTrading');
           }}
         ]);
       } else {

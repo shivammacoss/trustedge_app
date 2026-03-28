@@ -191,7 +191,7 @@ const DashboardScreen = () => {
 
   const quickActions = [
     { id: 'trade', icon: 'trending-up', label: 'Trade', screen: 'MainTrading', color: '#22c55e', desc: 'Open Chart' },
-    { id: 'accounts', icon: 'wallet-outline', label: 'Accounts', screen: 'Accounts', color: '#2563EB', desc: 'Manage' },
+    { id: 'wallet', icon: 'wallet-outline', label: 'Wallet', screen: 'Wallet', color: '#2563EB', desc: 'Deposit / withdraw' },
     { id: 'wallet', icon: 'card-outline', label: 'Wallet', screen: 'Wallet', color: '#f59e0b', desc: 'Deposit/Withdraw' },
     { id: 'copy', icon: 'people-circle-outline', label: 'Social', screen: 'Social', color: '#8b5cf6', desc: 'Copy trading' },
     { id: 'ib', icon: 'briefcase-outline', label: 'Business', screen: 'Business', params: { initialTab: 'ib' }, color: '#ec4899', desc: 'Referral & IB' },

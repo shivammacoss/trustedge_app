@@ -143,6 +143,30 @@ const defaultInstruments = [
 // Shared context for trading data
 const TradingContext = React.createContext();
 
+/** Align with web: one main (live) trading account — exclude demo from picker and API list. */
+function normalizeTradingAccountRow(raw) {
+  if (!raw || typeof raw !== 'object') return raw;
+  const id = raw.id || raw._id;
+  const accNum = String(raw.account_number ?? raw.accountNumber ?? '').trim();
+  return {
+    ...raw,
+    id,
+    _id: id,
+    account_number: accNum || raw.account_number,
+    accountNumber: accNum,
+    accountId: accNum || String(id ?? ''),
+    balance: Number(raw.balance ?? 0),
+    equity: Number(raw.equity ?? raw.balance ?? 0),
+    credit: Number(raw.credit ?? 0),
+    is_demo: raw.is_demo === true,
+    isDemo: raw.is_demo === true || raw.isDemo === true,
+  };
+}
+
+function isDemoTradingAccount(a) {
+  return !!(a?.is_demo || a?.isDemo || a?.accountTypeId?.isDemo);
+}
+
 const TradingProvider = ({ children, navigation, route }) => {
   const [user, setUser] = useState(null);
   const [accounts, setAccounts] = useState([]);
@@ -550,31 +574,33 @@ const TradingProvider = ({ children, navigation, route }) => {
       const data = await res.json();
       console.log('[PTD2] Accounts response:', data);
       
-      const accountsList = data.items || data || [];
+      const rawList = data.items || data || [];
+      const normalized = Array.isArray(rawList) ? rawList.map(normalizeTradingAccountRow) : [];
+      const liveOnly = normalized.filter((a) => !isDemoTradingAccount(a));
+      const accountsList = liveOnly.length > 0 ? liveOnly : normalized;
+
       setAccounts(accountsList);
       
       if (accountsList.length > 0) {
-        console.log('[PTD2] Accounts loaded:', accountsList.length);
+        console.log('[PTD2] Accounts loaded (live-first):', accountsList.length);
 
-        // Try to restore previously selected account from SecureStore
-        // Use local variable to avoid closure bug with selectedAccount state
         let accountToSelect = null;
         const savedAccountId = await SecureStore.getItemAsync('selectedAccountId');
         if (savedAccountId) {
-          accountToSelect = accountsList.find(a => (a.id || a._id) === savedAccountId);
+          accountToSelect = accountsList.find(
+            (a) => String(a.id || a._id) === String(savedAccountId)
+          );
           if (accountToSelect) {
             console.log('[PTD2] Restoring saved account:', accountToSelect.account_number || accountToSelect.id);
           }
         }
 
-        // Fall back to first account if no saved account found
         if (!accountToSelect) {
           accountToSelect = accountsList[0];
           console.log('[PTD2] Auto-selecting first account:', accountToSelect.account_number || accountToSelect.id);
         }
 
         setSelectedAccount(accountToSelect);
-        // Save the correct id field (PTD2 uses UUID 'id')
         const idToSave = accountToSelect.id || accountToSelect._id;
         if (idToSave) SecureStore.setItemAsync('selectedAccountId', idToSave);
       } else {
@@ -1235,11 +1261,11 @@ const HomeTab = ({ navigation }) => {
           </View>
           <TouchableOpacity
             style={[styles.liveChip, { backgroundColor: colors.bgCard, borderColor: colors.border }]}
-            onPress={() => parentNav?.navigate('Accounts')}
+            onPress={() => parentNav?.navigate('Wallet')}
             activeOpacity={0.8}
           >
             <Text style={[styles.liveChipText, { color: colors.textPrimary }]}>
-              {ctx.isChallengeMode ? 'Challenge' : (ctx.selectedAccount?.isDemo || ctx.selectedAccount?.accountTypeId?.isDemo ? 'Demo' : 'Live')}
+              {ctx.isChallengeMode ? 'Challenge' : 'Live'}
             </Text>
             <Ionicons name="chevron-down" size={14} color={colors.textMuted} />
           </TouchableOpacity>
@@ -1282,9 +1308,9 @@ const HomeTab = ({ navigation }) => {
             <Text style={[styles.heroSub, { color: colors.textSecondary }]}>Access global FX, metals, crypto & indices</Text>
             <TouchableOpacity
               style={[styles.heroSetupBtn, { backgroundColor: isDark ? '#f1f5f9' : colors.primary }]}
-              onPress={() => parentNav?.navigate('Accounts')}
+              onPress={() => parentNav?.navigate('Wallet')}
             >
-              <Text style={[styles.heroSetupBtnText, { color: isDark ? '#0f172a' : '#ffffff' }]}>Setup</Text>
+              <Text style={[styles.heroSetupBtnText, { color: isDark ? '#0f172a' : '#ffffff' }]}>Add funds</Text>
             </TouchableOpacity>
           </>
         ) : (
