@@ -110,7 +110,7 @@ const ForgotPasswordScreen = ({ navigation }) => {
   if (success) {
     return (
       <View style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor="#000000" />
+        <StatusBar barStyle="light-content" backgroundColor="#121212" />
         <View style={styles.successContainer}>
           <View style={styles.successIcon}>
             <Ionicons name="checkmark-circle" size={64} color="#22c55e" />
@@ -142,7 +142,7 @@ const ForgotPasswordScreen = ({ navigation }) => {
         style={styles.container} 
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <StatusBar barStyle="light-content" backgroundColor="#000000" />
+        <StatusBar barStyle="light-content" backgroundColor="#121212" />
         <ScrollView 
           style={styles.scrollView} 
           contentContainerStyle={styles.content}
@@ -223,7 +223,7 @@ const ForgotPasswordScreen = ({ navigation }) => {
             disabled={loading}
           >
             {loading ? (
-              <ActivityIndicator color="#000" />
+              <ActivityIndicator color="#ffffff" />
             ) : (
               <Text style={styles.buttonText}>Reset Password</Text>
             )}
@@ -239,7 +239,7 @@ const ForgotPasswordScreen = ({ navigation }) => {
       style={styles.container} 
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <StatusBar barStyle="light-content" backgroundColor="#000000" />
+      <StatusBar barStyle="light-content" backgroundColor="#121212" />
       <ScrollView 
         style={styles.scrollView} 
         contentContainerStyle={styles.content}
@@ -257,7 +257,7 @@ const ForgotPasswordScreen = ({ navigation }) => {
         {/* Icon */}
         <View style={styles.iconContainer}>
           <View style={styles.iconCircle}>
-            <Ionicons name="lock-open-outline" size={40} color="#dc2626" />
+            <Ionicons name="lock-open-outline" size={40} color="#2563EB" />
           </View>
         </View>
 
@@ -295,7 +295,7 @@ const ForgotPasswordScreen = ({ navigation }) => {
           disabled={loading}
         >
           {loading ? (
-            <ActivityIndicator color="#000" />
+            <ActivityIndicator color="#ffffff" />
           ) : (
             <Text style={styles.buttonText}>Send Reset Code</Text>
           )}
@@ -316,7 +316,7 @@ const ForgotPasswordScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#121212',
   },
   scrollView: {
     flex: 1,
@@ -345,7 +345,7 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: '#dc262620',
+    backgroundColor: '#2563EB20',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -400,7 +400,7 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   button: {
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
@@ -410,7 +410,7 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   buttonText: {
-    color: '#000',
+    color: '#ffffff',
     fontSize: 16,
     fontWeight: 'bold',
   },
@@ -424,7 +424,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   loginLink: {
-    color: '#dc2626',
+    color: '#2563EB',
     fontSize: 15,
     fontWeight: '600',
   },

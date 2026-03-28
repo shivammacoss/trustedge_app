@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,7 @@ import {
   Alert,
   Linking,
   Image,
+  Share,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable, GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -29,6 +30,14 @@ import * as SecureStore from 'expo-secure-store';
 import { API_URL, API_BASE_URL } from '../config';
 import { useTheme } from '../context/ThemeContext';
 import socketService from '../services/socketService';
+import { getJsonAuthHeaders } from '../utils/authHeaders';
+import {
+  extractInstrumentRows,
+  extractPriceRows,
+  rowsToPriceDict,
+  normalizeInstrumentCategory,
+} from '../utils/marketData';
+import Mt5QuoteRow from '../components/Mt5QuoteRow';
 
 const Tab = createBottomTabNavigator();
 const { width, height } = Dimensions.get('window');
@@ -84,7 +93,7 @@ const ToastItem = ({ toast, index }) => {
       case 'success': return { backgroundColor: 'rgba(34, 197, 94, 0.95)', icon: 'checkmark-circle' };
       case 'error': return { backgroundColor: 'rgba(239, 68, 68, 0.95)', icon: 'close-circle' };
       case 'warning': return { backgroundColor: 'rgba(251, 191, 36, 0.95)', icon: 'warning' };
-      default: return { backgroundColor: 'rgba(59, 130, 246, 0.95)', icon: 'information-circle' };
+      default: return { backgroundColor: 'rgba(37, 99, 235, 0.95)', icon: 'information-circle' };
     }
   };
   
@@ -161,50 +170,117 @@ const TradingProvider = ({ children, navigation, route }) => {
   }, []);
 
   useEffect(() => {
+    console.log('[PTD2] User state changed:', !!user);
     if (user) {
-      fetchAccounts(user._id);
-      fetchChallengeAccounts(user._id);
+      console.log('[PTD2] User loaded, fetching accounts for user ID:', user.id || user._id);
+      fetchAccounts(user.id || user._id); // PTD2 uses 'id', fallback to '_id'
+      fetchChallengeAccounts(user.id || user._id);
+    } else {
+      console.log('[PTD2] No user - not fetching accounts');
     }
   }, [user]);
 
-  // Fetch instruments from backend API (Infoway)
+  // Fetch instruments from backend API (PTD2)
   const fetchInstrumentsFromAPI = async () => {
     try {
-      const res = await fetch(`${API_URL}/prices/instruments`);
-      const data = await res.json();
-      if (data.success && data.instruments?.length > 0) {
-        // Map API instruments to app format with starred defaults
+      const headers = await getJsonAuthHeaders();
+      const urls = [`${API_URL}/instruments/`, `${API_URL}/instruments`];
+      let data = null;
+      let ok = false;
+      for (const url of urls) {
+        console.log('[Mobile] Fetching instruments from:', url);
+        const res = await fetch(url, { headers });
+        data = await res.json().catch(() => null);
+        console.log('[Mobile] Instruments response status:', res.status);
+        if (res.ok) {
+          ok = true;
+          break;
+        }
+      }
+      const rows = extractInstrumentRows(data);
+      if (ok && rows.length > 0) {
         const starredSymbols = ['EURUSD', 'GBPUSD', 'XAUUSD', 'BTCUSD'];
-        const mappedInstruments = data.instruments.map(inst => ({
-          symbol: inst.symbol,
-          name: inst.name,
-          bid: 0,
-          ask: 0,
-          spread: 0,
-          category: inst.category,
-          starred: starredSymbols.includes(inst.symbol)
-        }));
+        const mappedInstruments = rows.map((inst) => {
+          const sym = String(inst.symbol || inst.pair || inst.name || '').trim().toUpperCase();
+          if (!sym) return null;
+          const category = normalizeInstrumentCategory(inst.segment || inst.category, sym);
+          return {
+            symbol: sym,
+            name: inst.display_name || inst.name || sym,
+            bid: 0,
+            ask: 0,
+            spread: 0,
+            category,
+            starred: starredSymbols.includes(sym),
+            digits: inst.digits,
+            pip_size: inst.pip_size,
+          };
+        }).filter(Boolean);
         setInstruments(mappedInstruments);
         console.log('[Mobile] Loaded', mappedInstruments.length, 'instruments from API');
+      } else if (!ok) {
+        console.warn('[Mobile] Instruments request failed; using default watchlist until prices load');
       }
     } catch (e) {
       console.error('[Mobile] Error fetching instruments:', e);
-      // Keep default instruments on error
+    } finally {
+      fetchAllPrices();
+    }
+  };
+
+  // Fetch all current prices from PTD2
+  const fetchAllPrices = async () => {
+    try {
+      const headers = await getJsonAuthHeaders();
+      console.log('[Mobile] Fetching prices from:', `${API_URL}/instruments/prices/all`);
+      const res = await fetch(`${API_URL}/instruments/prices/all`, { headers });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        console.warn('[Mobile] Prices HTTP', res.status, typeof data === 'string' ? data : JSON.stringify(data)?.slice(0, 200));
+        return;
+      }
+      const rows = extractPriceRows(data);
+      const pricesDict = rows.length ? rowsToPriceDict(rows) : {};
+      console.log('[Mobile] Price rows:', rows.length, 'symbols:', Object.keys(pricesDict).length);
+
+      if (Object.keys(pricesDict).length === 0) return;
+
+      setLivePrices(pricesDict);
+
+      setInstruments((prev) => {
+        try {
+          return prev.map((inst) => {
+            if (!inst?.symbol) return inst;
+            const price = pricesDict[inst.symbol];
+            if (price && (price.bid > 0 || price.ask > 0)) {
+              return {
+                ...inst,
+                bid: price.bid,
+                ask: price.ask || price.bid,
+                spread: price.spread ?? Math.abs((price.ask || price.bid) - price.bid),
+              };
+            }
+            return inst;
+          });
+        } catch (e) {
+          console.error('[Mobile] Error updating instruments:', e);
+          return prev;
+        }
+      });
+    } catch (e) {
+      console.error('[Mobile] Error fetching prices:', e);
     }
   };
 
   // Handle selectedAccountId from navigation params (when coming from AccountsScreen)
   useEffect(() => {
     if (route?.params?.selectedAccountId && accounts.length > 0) {
-      const account = accounts.find(a => a._id === route.params.selectedAccountId);
-      console.log('DEBUG: Selecting account from params:', route.params.selectedAccountId);
-      console.log('DEBUG: Found account:', account ? { id: account.accountId, balance: account.balance, credit: account.credit } : 'NOT FOUND');
+      const account = accounts.find(a => (a.id || a._id) === route.params.selectedAccountId);
       if (account) {
         setSelectedAccount(account);
         setIsChallengeMode(false);
         setSelectedChallengeAccount(null);
-        // Save to SecureStore for persistence
-        SecureStore.setItemAsync('selectedAccountId', account._id);
+        SecureStore.setItemAsync('selectedAccountId', account.id || account._id);
         SecureStore.deleteItemAsync('selectedChallengeAccountId');
         // Clear the param to prevent re-triggering
         navigation.setParams({ selectedAccountId: null });
@@ -228,36 +304,18 @@ const TradingProvider = ({ children, navigation, route }) => {
     }
   }, [route?.params?.challengeAccountId, challengeAccounts]);
 
-  // Fetch challenge accounts
+  // Fetch challenge accounts - PTD2 doesn't have a separate prop endpoint
+  // Challenge accounts are regular accounts, skip this for now
   const fetchChallengeAccounts = async (userId) => {
-    try {
-      const res = await fetch(`${API_URL}/prop/my-accounts/${userId}`);
-      const data = await res.json();
-      if (data.success) {
-        setChallengeAccounts(data.accounts || []);
-        // Restore previously selected challenge account
-        const savedChallengeAccountId = await SecureStore.getItemAsync('selectedChallengeAccountId');
-        if (savedChallengeAccountId && data.accounts?.length > 0) {
-          const savedAccount = data.accounts.find(a => a._id === savedChallengeAccountId);
-          if (savedAccount && savedAccount.status === 'ACTIVE') {
-            setSelectedChallengeAccount(savedAccount);
-          }
-        }
-        // Update selected challenge account with fresh data
-        if (selectedChallengeAccount && data.accounts?.length > 0) {
-          const updatedAccount = data.accounts.find(a => a._id === selectedChallengeAccount._id);
-          if (updatedAccount) {
-            setSelectedChallengeAccount(updatedAccount);
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Error fetching challenge accounts:', e);
-    }
+    // PTD2 doesn't have /prop/my-accounts endpoint
+    // Challenge accounts are handled as regular accounts
+    setChallengeAccounts([]);
   };
   
   // Refresh challenge account stats periodically
   const refreshChallengeAccountStats = async () => {
+    // PTD2 doesn't have prop accounts endpoint - skip
+    return;
     if (!isChallengeMode || !selectedChallengeAccount || !user) return;
     try {
       const res = await fetch(`${API_URL}/prop/my-accounts/${user._id}`);
@@ -275,17 +333,20 @@ const TradingProvider = ({ children, navigation, route }) => {
     }
   };
 
-  // Save selected account ID whenever it changes
+  // Save selected account ID whenever it changes (PTD2 uses 'id' UUID, not '_id')
   useEffect(() => {
-    if (selectedAccount?._id) {
-      SecureStore.setItemAsync('selectedAccountId', selectedAccount._id);
+    const accountId = selectedAccount?.id || selectedAccount?._id;
+    if (accountId) {
+      SecureStore.setItemAsync('selectedAccountId', accountId);
     }
-  }, [selectedAccount?._id]);
+  }, [selectedAccount?.id, selectedAccount?._id]);
 
   useEffect(() => {
     // Fetch trades for the active account (regular or challenge)
+    // Only fetch if user is authenticated and has an active account
     const hasActiveAccount = isChallengeMode ? selectedChallengeAccount : selectedAccount;
-    if (hasActiveAccount) {
+    if (user && hasActiveAccount) {
+      console.log('[PTD2] User authenticated and account selected, fetching trading data');
       fetchOpenTrades();
       fetchPendingOrders();
       fetchTradeHistory();
@@ -293,14 +354,18 @@ const TradingProvider = ({ children, navigation, route }) => {
       
       // Faster polling for real-time sync with web (every 2 seconds)
       const interval = setInterval(() => {
-        fetchOpenTrades();
-        fetchPendingOrders();
-        fetchAccountSummary();
+        if (user) { // Double-check user is still authenticated
+          fetchOpenTrades();
+          fetchPendingOrders();
+          fetchAccountSummary();
+        }
       }, 2000);
       
       // Refresh history less frequently (every 10 seconds)
       const historyInterval = setInterval(() => {
-        fetchTradeHistory();
+        if (user) { // Double-check user is still authenticated
+          fetchTradeHistory();
+        }
       }, 10000);
       
       // Refresh challenge account stats every 5 seconds (for DD, profit, balance)
@@ -316,7 +381,7 @@ const TradingProvider = ({ children, navigation, route }) => {
         clearInterval(challengeStatsInterval);
       };
     }
-  }, [selectedAccount, isChallengeMode, selectedChallengeAccount]);
+  }, [user, selectedAccount, isChallengeMode, selectedChallengeAccount]);
 
   // WebSocket connection for real-time prices
   useEffect(() => {
@@ -326,14 +391,24 @@ const TradingProvider = ({ children, navigation, route }) => {
     // Subscribe to price updates via WebSocket - tick-to-tick for fastest updates
     const unsubscribe = socketService.addPriceListener((prices) => {
       if (prices && Object.keys(prices).length > 0) {
-        // Tick-to-tick updates - immediate state update for fastest price display
         setLivePrices(prev => ({ ...prev, ...prices }));
-        
-        // Update instruments immediately
+
         setInstruments(prev => prev.map(inst => {
-          const price = prices[inst.symbol];
-          if (price && price.bid) {
-            return { ...inst, bid: price.bid, ask: price.ask || price.bid, spread: Math.abs((price.ask || price.bid) - price.bid) };
+          const key = inst.symbol;
+          const price = prices[key] ?? prices[String(key || '').toUpperCase()];
+          const bid = Number(price?.bid);
+          const ask = Number(price?.ask);
+          if (price && ((Number.isFinite(bid) && bid > 0) || (Number.isFinite(ask) && ask > 0))) {
+            const bidN = Number.isFinite(bid) && bid > 0 ? bid : ask;
+            const askN = Number.isFinite(ask) && ask > 0 ? ask : bidN;
+            return {
+              ...inst,
+              bid: bidN,
+              ask: askN,
+              spread: price.spread != null && Number.isFinite(Number(price.spread))
+                ? Number(price.spread)
+                : Math.abs(askN - bidN),
+            };
           }
           return inst;
         }));
@@ -360,54 +435,24 @@ const TradingProvider = ({ children, navigation, route }) => {
   }, []);
 
   const fetchAdminSpreads = async () => {
-    try {
-      const res = await fetch(`${API_URL}/charges/spreads`);
-      const data = await res.json();
-      if (data.success) {
-        setAdminSpreads(data.spreads || {});
-      }
-    } catch (e) {
-      console.error('Error fetching admin spreads:', e);
-    }
+    // PTD2 doesn't have /charges/spreads endpoint - spreads are per-instrument
+    setAdminSpreads({});
   };
 
   const fetchMarketWatchNews = async () => {
-    try {
-      const res = await fetch(`${API_URL}/news/marketwatch`);
-      if (!res.ok) {
-        // News endpoint not available, skip silently
-        setLoadingNews(false);
-        return;
-      }
-      const text = await res.text();
-      // Check if response is valid JSON before parsing
-      if (text && text.startsWith('{')) {
-        const data = JSON.parse(text);
-        if (data.success && data.news) {
-          setMarketWatchNews(data.news);
-        }
-      }
-    } catch (e) {
-      // Silently fail - news is optional
-      console.log('News fetch skipped:', e.message);
-    } finally {
-      setLoadingNews(false);
-    }
+    // PTD2 doesn't have /news/marketwatch endpoint
+    setMarketWatchNews([]);
+    setLoadingNews(false);
   };
 
-  // Check SL/TP for all open trades (like web app)
+  // Check SL/TP for all open trades
+  // PTD2 backend handles SL/TP server-side, no need to check from mobile
   const checkSlTp = async () => {
     try {
-      // Only check if we have prices and open trades
-      if (Object.keys(livePrices).length === 0) return;
-      if (!openTrades || openTrades.length === 0) return;
-      
-      const res = await fetch(`${API_URL}/trade/check-sltp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prices: livePrices })
-      });
-      const data = await res.json();
+      // PTD2 handles SL/TP server-side - just refresh open trades periodically
+      if (!Array.isArray(openTrades) || openTrades.length === 0) return;
+      return; // Skip - PTD2 handles this
+      const data = {};
       
       // Debug log
       if (data.closedCount > 0) {
@@ -434,7 +479,8 @@ const TradingProvider = ({ children, navigation, route }) => {
           }
           
           const trigger = closed.trigger || closed.closedBy || closed.reason || 'Manual';
-          const pnlText = closed.pnl >= 0 ? `+$${closed.pnl.toFixed(2)}` : `-$${Math.abs(closed.pnl).toFixed(2)}`;
+          const pnlValue = Number(closed.pnl || 0);
+          const pnlText = pnlValue >= 0 ? `+$${pnlValue.toFixed(2)}` : `-$${Math.abs(pnlValue).toFixed(2)}`;
           console.log(`[Trade Close] Showing alert for ${closed.symbol} - ${trigger}`);
           
           // Determine alert title and message based on trigger type
@@ -472,7 +518,7 @@ const TradingProvider = ({ children, navigation, route }) => {
       console.log('DEBUG: User data from SecureStore:', userData ? 'Found' : 'Not found');
       if (userData) {
         const parsedUser = JSON.parse(userData);
-        console.log('DEBUG: Parsed user ID:', parsedUser?._id);
+        console.log('DEBUG: Parsed user ID:', parsedUser?.id || parsedUser?._id);
         setUser(parsedUser);
       } else {
         console.log('DEBUG: No user data, redirecting to Login');
@@ -486,32 +532,54 @@ const TradingProvider = ({ children, navigation, route }) => {
 
   const fetchAccounts = async (userId, forceSelectFirst = false) => {
     try {
-      console.log('DEBUG: Fetching accounts for userId:', userId);
-      const res = await fetch(`${API_URL}/trading-accounts/user/${userId}`);
-      const data = await res.json();
-      console.log('DEBUG: Accounts response:', data.success, 'Count:', data.accounts?.length);
-      setAccounts(data.accounts || []);
+      console.log('[PTD2] Fetching accounts from backend');
+      const token = await SecureStore.getItemAsync('token');
       
-      if (data.accounts?.length > 0) {
+      if (!token) {
+        console.log('[PTD2] No token found, redirecting to login');
+        navigation.replace('Login');
+        return;
+      }
+      
+      const res = await fetch(`${API_URL}/accounts`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const data = await res.json();
+      console.log('[PTD2] Accounts response:', data);
+      
+      const accountsList = data.items || data || [];
+      setAccounts(accountsList);
+      
+      if (accountsList.length > 0) {
+        console.log('[PTD2] Accounts loaded:', accountsList.length);
+
         // Try to restore previously selected account from SecureStore
+        // Use local variable to avoid closure bug with selectedAccount state
+        let accountToSelect = null;
         const savedAccountId = await SecureStore.getItemAsync('selectedAccountId');
-        console.log('DEBUG: Saved account ID from SecureStore:', savedAccountId);
-        
         if (savedAccountId) {
-          const savedAccount = data.accounts.find(a => a._id === savedAccountId);
-          if (savedAccount) {
-            console.log('DEBUG: Restoring saved account:', savedAccount.accountId);
-            // Update the selected account with fresh data from server
-            setSelectedAccount(savedAccount);
-            return;
+          accountToSelect = accountsList.find(a => (a.id || a._id) === savedAccountId);
+          if (accountToSelect) {
+            console.log('[PTD2] Restoring saved account:', accountToSelect.account_number || accountToSelect.id);
           }
         }
-        
-        // Only set first account if no saved account found OR forced
-        if (forceSelectFirst || !selectedAccount) {
-          console.log('DEBUG: No saved account, using first account:', data.accounts[0].accountId);
-          setSelectedAccount(data.accounts[0]);
+
+        // Fall back to first account if no saved account found
+        if (!accountToSelect) {
+          accountToSelect = accountsList[0];
+          console.log('[PTD2] Auto-selecting first account:', accountToSelect.account_number || accountToSelect.id);
         }
+
+        setSelectedAccount(accountToSelect);
+        // Save the correct id field (PTD2 uses UUID 'id')
+        const idToSave = accountToSelect.id || accountToSelect._id;
+        if (idToSave) SecureStore.setItemAsync('selectedAccountId', idToSave);
+      } else {
+        console.log('[PTD2] No accounts available');
+        setAccounts([]);
       }
     } catch (e) {
       console.error('Error fetching accounts:', e);
@@ -520,23 +588,97 @@ const TradingProvider = ({ children, navigation, route }) => {
 
   const fetchOpenTrades = async () => {
     // Use challenge account if in challenge mode, otherwise regular account
-    const accountId = isChallengeMode && selectedChallengeAccount ? selectedChallengeAccount._id : selectedAccount?._id;
-    if (!accountId) return;
+    const accountId = isChallengeMode && selectedChallengeAccount 
+      ? (selectedChallengeAccount.id || selectedChallengeAccount._id)
+      : (selectedAccount?.id || selectedAccount?._id);
+    if (!accountId) {
+      console.log('[PTD2] No account ID for fetchOpenTrades');
+      return;
+    }
     try {
-      const res = await fetch(`${API_URL}/trade/open/${accountId}`);
+      const token = await SecureStore.getItemAsync('token');
+      console.log('[PTD2] Token available for open trades:', !!token);
+      console.log('[PTD2] Account ID for open trades:', accountId);
+      
+      if (!token) {
+        console.log('[PTD2] No token - skipping open trades fetch');
+        return;
+      }
+      
+      const res = await fetch(`${API_URL}/positions/?account_id=${accountId}&status=open`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
       const data = await res.json();
-      if (data.success) setOpenTrades(data.trades || []);
-    } catch (e) {}
+      console.log('[PTD2] Open positions response:', data);
+      // Map backend snake_case to camelCase expected by UI
+      const rawList = Array.isArray(data.items) ? data.items : Array.isArray(data) ? data : [];
+      const mappedTrades = rawList.map(t => ({
+        ...t,
+        _id: t.id || t._id,
+        side: (t.side || '').toUpperCase(),
+        quantity: t.lots || t.quantity || 0,
+        openPrice: t.open_price || t.openPrice || 0,
+        currentPrice: t.current_price || t.currentPrice || 0,
+        stopLoss: t.stop_loss || t.stopLoss || null,
+        takeProfit: t.take_profit || t.takeProfit || null,
+        sl: t.stop_loss || t.sl || null,
+        tp: t.take_profit || t.tp || null,
+        contractSize: t.contract_size || t.contractSize || 100000,
+        marginUsed: t.margin_used || t.marginUsed || 0,
+        commission: t.commission || 0,
+        swap: t.swap || 0,
+        profit: t.profit || 0,
+      }));
+      setOpenTrades(mappedTrades);
+    } catch (e) {
+      console.error('Error fetching open trades:', e);
+    }
   };
 
   const fetchPendingOrders = async () => {
     // Use challenge account if in challenge mode, otherwise regular account
-    const accountId = isChallengeMode && selectedChallengeAccount ? selectedChallengeAccount._id : selectedAccount?._id;
-    if (!accountId) return;
+    const accountId = isChallengeMode && selectedChallengeAccount 
+      ? (selectedChallengeAccount.id || selectedChallengeAccount._id)
+      : (selectedAccount?.id || selectedAccount?._id);
+    if (!accountId) {
+      console.log('[PTD2] No account ID for fetchPendingOrders');
+      return;
+    }
     try {
-      const res = await fetch(`${API_URL}/trade/pending/${accountId}`);
+      const token = await SecureStore.getItemAsync('token');
+      console.log('[PTD2] Token available for pending orders:', !!token);
+      
+      if (!token) {
+        console.log('[PTD2] No token - skipping pending orders fetch');
+        return;
+      }
+      
+      const res = await fetch(`${API_URL}/orders/?account_id=${accountId}&status=pending`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
       const data = await res.json();
-      if (data.success) setPendingOrders(data.trades || []);
+      console.log('[PTD2] Pending orders response:', data);
+      // Map backend snake_case to camelCase expected by UI
+      const rawOrders = Array.isArray(data.items) ? data.items : Array.isArray(data) ? data : [];
+      const mappedOrders = rawOrders.map(o => ({
+        ...o,
+        _id: o.id || o._id,
+        side: (o.side || '').toUpperCase(),
+        quantity: o.lots || o.quantity || 0,
+        orderType: o.order_type || o.orderType || 'limit',
+        price: o.price || o.filled_price || 0,
+        stopLoss: o.stop_loss || o.stopLoss || null,
+        takeProfit: o.take_profit || o.takeProfit || null,
+        sl: o.stop_loss || o.sl || null,
+        tp: o.take_profit || o.tp || null,
+      }));
+      setPendingOrders(mappedOrders);
     } catch (e) {
       console.error('Error fetching pending orders:', e);
     }
@@ -544,69 +686,144 @@ const TradingProvider = ({ children, navigation, route }) => {
 
   const fetchTradeHistory = async () => {
     // Use challenge account if in challenge mode, otherwise regular account
-    const accountId = isChallengeMode && selectedChallengeAccount ? selectedChallengeAccount._id : selectedAccount?._id;
-    if (!accountId) return;
+    const accountId = isChallengeMode && selectedChallengeAccount 
+      ? (selectedChallengeAccount.id || selectedChallengeAccount._id)
+      : (selectedAccount?.id || selectedAccount?._id);
+    if (!accountId) {
+      console.log('[PTD2] No account ID for fetchTradeHistory');
+      return;
+    }
     try {
-      const res = await fetch(`${API_URL}/trade/history/${accountId}?limit=50`);
+      const token = await SecureStore.getItemAsync('token');
+      console.log('[PTD2] Token available for trade history:', !!token);
+      
+      if (!token) {
+        console.log('[PTD2] No token - skipping trade history fetch');
+        return;
+      }
+      
+      // Use /portfolio/trades for proper trade history with close_price and profit
+      const res = await fetch(`${API_URL}/portfolio/trades?account_id=${accountId}&per_page=200`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
       const data = await res.json();
-      if (data.success) setTradeHistory(data.trades || []);
-    } catch (e) {}
+      console.log('[PTD2] Trade history response:', data);
+      
+      // Backend returns { items: [...] } with snake_case fields
+      // UI expects camelCase fields, so map them here
+      const rawItems = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+      const mappedHistory = rawItems.map(trade => ({
+        _id: trade.id || trade._id,
+        id: trade.id || trade._id,
+        symbol: trade.symbol || '',
+        side: (trade.side || '').toUpperCase(), // UI expects "BUY"/"SELL"
+        quantity: trade.lots || trade.quantity || 0,
+        lots: trade.lots || trade.quantity || 0,
+        openPrice: trade.open_price || trade.openPrice || 0,
+        open_price: trade.open_price || trade.openPrice || 0,
+        closePrice: trade.close_price || trade.closePrice || 0,
+        close_price: trade.close_price || trade.closePrice || 0,
+        realizedPnl: trade.pnl || trade.profit || trade.realizedPnl || 0,
+        pnl: trade.pnl || trade.profit || trade.realizedPnl || 0,
+        profit: trade.pnl || trade.profit || 0,
+        commission: trade.commission || 0,
+        swap: trade.swap || 0,
+        closedAt: trade.close_time || trade.closed_at || trade.closedAt || null,
+        closed_at: trade.close_time || trade.closed_at || trade.closedAt || null,
+        closedBy: trade.close_reason || trade.closedBy || 'manual',
+        close_reason: trade.close_reason || trade.closedBy || 'manual',
+        created_at: trade.opened_at || trade.created_at || null,
+      }));
+      
+      setTradeHistory(mappedHistory);
+    } catch (e) {
+      console.error('Error fetching trade history:', e);
+    }
   };
 
   const fetchAccountSummary = async () => {
-    // For challenge accounts, use the account data directly (no API endpoint exists)
+    // For challenge accounts, use the account data directly
     if (isChallengeMode && selectedChallengeAccount) {
       setAccountSummary({
-        balance: selectedChallengeAccount.currentBalance || selectedChallengeAccount.balance || 0,
-        equity: selectedChallengeAccount.currentEquity || selectedChallengeAccount.currentBalance || 0,
-        credit: selectedChallengeAccount.credit || 0,
+        balance: Number(selectedChallengeAccount.currentBalance || selectedChallengeAccount.balance || 0),
+        equity: Number(selectedChallengeAccount.currentEquity || selectedChallengeAccount.currentBalance || 0),
+        credit: Number(selectedChallengeAccount.credit || 0),
         usedMargin: 0,
-        freeMargin: selectedChallengeAccount.currentBalance || 0,
+        freeMargin: Number(selectedChallengeAccount.currentBalance || 0),
         floatingPnl: 0
       });
       return;
     }
     
-    // For regular accounts, fetch from API
-    const accountId = selectedAccount?._id;
-    if (!accountId) return;
-    
-    // Skip if no valid account or if account looks like a challenge account ID
-    if (!selectedAccount?.accountType || selectedAccount?.accountType === 'challenge') {
+    // For regular accounts, fetch from PTD2 API
+    const accountId = selectedAccount?.id || selectedAccount?._id;
+    if (!accountId) {
+      console.log('[PTD2] No account ID for fetchAccountSummary');
       return;
     }
     
     try {
-      // Pass current prices to backend for accurate floating PnL calculation
-      const pricesParam = Object.keys(livePrices).length > 0 
-        ? `?prices=${encodeURIComponent(JSON.stringify(livePrices))}` 
-        : '';
-      const res = await fetch(`${API_URL}/trade/summary/${accountId}${pricesParam}`);
+      const token = await SecureStore.getItemAsync('token');
+      if (!token) {
+        console.log('[PTD2] No token for fetchAccountSummary');
+        return;
+      }
       
-      // Check if response is JSON before parsing
-      const contentType = res.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
-        console.warn('[AccountSummary] Non-JSON response for account:', accountId);
+      const res = await fetch(`${API_URL}/accounts/${accountId}/summary`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.log('[PTD2] Account summary fetch failed:', res.status, errData?.detail || errData);
         return;
       }
       
       const data = await res.json();
-      if (data.success && data.summary) {
-        setAccountSummary(data.summary);
-      }
+      console.log('[PTD2] Account summary:', data);
+      
+      // Ensure all values are numbers to prevent toFixed crashes
+      setAccountSummary({
+        balance: Number(data.balance || 0),
+        equity: Number(data.equity || 0),
+        credit: Number(data.credit || 0),
+        usedMargin: Number(data.margin_used || 0),
+        freeMargin: Number(data.free_margin || 0),
+        floatingPnl: Number(data.unrealized_pnl || 0)
+      });
     } catch (e) {
-      // Silently ignore errors - don't spam console
+      console.error('[PTD2] Error fetching account summary:', e);
+      // Set safe defaults to prevent crashes
+      setAccountSummary({
+        balance: 0,
+        equity: 0,
+        credit: 0,
+        usedMargin: 0,
+        freeMargin: 0,
+        floatingPnl: 0
+      });
     }
   };
 
   const calculatePnl = (trade) => {
+    if (!trade || !trade.symbol) return 0;
     const prices = livePrices[trade.symbol];
     if (!prices || !prices.bid) return 0;
-    const currentPrice = trade.side === 'BUY' ? prices.bid : prices.ask;
-    const contractSize = trade.contractSize || 100000;
-    const pnl = trade.side === 'BUY'
-      ? (currentPrice - trade.openPrice) * trade.quantity * contractSize
-      : (trade.openPrice - currentPrice) * trade.quantity * contractSize;
+    const side = (trade.side || '').toUpperCase();
+    const currentPrice = side === 'BUY' ? prices.bid : prices.ask;
+    if (!currentPrice) return 0;
+    const openPrice = trade.openPrice || trade.open_price || 0;
+    const quantity = trade.lots || trade.quantity || 0;
+    const contractSize = trade.contract_size || trade.contractSize || 100000;
+    const pnl = side === 'BUY'
+      ? (currentPrice - openPrice) * quantity * contractSize
+      : (openPrice - currentPrice) * quantity * contractSize;
     return pnl - (trade.commission || 0) - (trade.swap || 0);
   };
 
@@ -614,31 +831,38 @@ const TradingProvider = ({ children, navigation, route }) => {
   const realTimeValues = React.useMemo(() => {
     // Use challenge account balance when in challenge mode, fallback to accountSummary
     const activeAccount = isChallengeMode ? selectedChallengeAccount : selectedAccount;
-    const balance = accountSummary.balance || activeAccount?.balance || 0;
-    const credit = accountSummary.credit || activeAccount?.credit || 0;
+    // Ensure all values are numbers to prevent toFixed crashes
+    const balance = Number(accountSummary.balance || activeAccount?.balance || 0);
+    const credit = Number(accountSummary.credit || activeAccount?.credit || 0);
     
     // Calculate today's realized PnL from closed trades
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const todayClosedPnl = tradeHistory
+    const safeTradeHistory = Array.isArray(tradeHistory) ? tradeHistory : [];
+    // tradeHistory contains only closed positions (fetched with status=closed)
+    // Use closed_at if available, fallback to created_at for date filtering
+    const todayClosedPnl = safeTradeHistory
       .filter(trade => {
-        const closedAt = new Date(trade.closedAt || trade.updatedAt);
-        return closedAt >= today && trade.status === 'CLOSED';
+        if (!trade) return false;
+        const closedAt = new Date(trade.closed_at || trade.closedAt || trade.updated_at || trade.updatedAt || trade.created_at);
+        return closedAt >= today;
       })
-      .reduce((sum, trade) => sum + (trade.pnl || 0), 0);
+      .reduce((sum, trade) => sum + Number(trade.pnl || trade.profit || 0), 0);
 
     // Calculate real-time PnL from live prices
     let totalPnl = 0;
     let totalMargin = 0;
 
-    openTrades.forEach(trade => {
+    const safeOpenTrades = Array.isArray(openTrades) ? openTrades : [];
+    safeOpenTrades.forEach(trade => {
+      if (!trade) return;
       totalPnl += calculatePnl(trade);
-      totalMargin += trade.marginUsed || 0;
+      totalMargin += Number(trade.marginUsed || trade.margin_used || 0);
     });
 
-    const equity = balance + credit + totalPnl;
+    const equity = Number(balance + credit + totalPnl);
     // Free Margin = Balance - Used Margin (not equity based)
-    const freeMargin = balance - totalMargin;
+    const freeMargin = Number(balance - totalMargin);
     
     // Calculate challenge-specific real-time values
     let realTimeDailyDD = 0;
@@ -646,22 +870,22 @@ const TradingProvider = ({ children, navigation, route }) => {
     let realTimeProfit = 0;
     
     if (isChallengeMode && selectedChallengeAccount) {
-      const initialBalance = selectedChallengeAccount.initialBalance || selectedChallengeAccount.phaseStartBalance || 5000;
-      const dayStartEquity = selectedChallengeAccount.dayStartEquity || initialBalance;
+      const initialBalance = Number(selectedChallengeAccount.initialBalance || selectedChallengeAccount.phaseStartBalance || 5000);
+      const dayStartEquity = Number(selectedChallengeAccount.dayStartEquity || initialBalance);
       
       // Daily Drawdown = (dayStartEquity - currentEquity) / dayStartEquity * 100
       // Only count if equity dropped below day start
-      const dailyLoss = dayStartEquity - equity;
-      realTimeDailyDD = dailyLoss > 0 ? (dailyLoss / dayStartEquity) * 100 : 0;
+      const dailyLoss = Number(dayStartEquity - equity);
+      realTimeDailyDD = dailyLoss > 0 ? Number((dailyLoss / dayStartEquity) * 100) : 0;
       
       // Overall Drawdown = (initialBalance - lowestEquity) / initialBalance * 100
       // Use current equity if it's lower than recorded lowest
-      const lowestEquity = Math.min(selectedChallengeAccount.lowestEquityOverall || initialBalance, equity);
-      const overallLoss = initialBalance - lowestEquity;
-      realTimeOverallDD = overallLoss > 0 ? (overallLoss / initialBalance) * 100 : 0;
+      const lowestEquity = Math.min(Number(selectedChallengeAccount.lowestEquityOverall || initialBalance), Number(equity));
+      const overallLoss = Number(initialBalance - lowestEquity);
+      realTimeOverallDD = overallLoss > 0 ? Number((overallLoss / initialBalance) * 100) : 0;
       
       // Profit = (currentEquity - initialBalance) / initialBalance * 100
-      realTimeProfit = ((equity - initialBalance) / initialBalance) * 100;
+      realTimeProfit = Number(((Number(equity) - initialBalance) / initialBalance) * 100);
     }
 
     return {
@@ -686,17 +910,17 @@ const TradingProvider = ({ children, navigation, route }) => {
 
   const refreshAccounts = async () => {
     if (user) {
-      await fetchAccounts(user._id);
-      await fetchChallengeAccounts(user._id);
+      await fetchAccounts(user.id);
+      await fetchChallengeAccounts(user.id);
     }
   };
 
   // Get the active trading account ID (either regular or challenge)
   const getActiveTradingAccountId = () => {
     if (isChallengeMode && selectedChallengeAccount) {
-      return selectedChallengeAccount._id;
+      return selectedChallengeAccount.id;
     }
-    return selectedAccount?._id;
+    return selectedAccount?.id;
   };
 
   // Get active account display info
@@ -739,12 +963,40 @@ const TradingProvider = ({ children, navigation, route }) => {
   );
 };
 
+/** Compact performance bars for copy-trader cards (no extra deps). */
+const MiniSparkline = ({ seed, positive }) => {
+  const s = typeof seed === 'string'
+    ? seed.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
+    : Number(seed) || 0;
+  const bars = [];
+  for (let i = 0; i < 14; i += 1) {
+    bars.push(0.25 + 0.75 * Math.abs(Math.sin((s + i * 17) * 0.01)));
+  }
+  const max = Math.max(...bars, 0.001);
+  const color = positive ? '#22c55e' : '#f97316';
+  return (
+    <View style={styles.sparklineRow}>
+      {bars.map((v, i) => (
+        <View
+          key={i}
+          style={[
+            styles.sparklineBar,
+            { height: Math.max(3, (v / max) * 26), backgroundColor: color },
+          ]}
+        />
+      ))}
+    </View>
+  );
+};
+
 // HOME TAB
 const HomeTab = ({ navigation }) => {
   const ctx = React.useContext(TradingContext);
   const { colors, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const parentNav = navigation.getParent();
   const [refreshing, setRefreshing] = useState(false);
+  const sessionOpenRef = useRef({});
   
   // Banner slider state
   const [banners, setBanners] = useState([]);
@@ -761,6 +1013,18 @@ const HomeTab = ({ navigation }) => {
   // Market data tabs state
   const [marketTab, setMarketTab] = useState('watchlist'); // 'watchlist', 'gainers', 'losers'
 
+  useEffect(() => {
+    const lp = ctx.livePrices || {};
+    Object.keys(lp).forEach((sym) => {
+      if (sessionOpenRef.current[sym] != null) return;
+      const row = lp[sym];
+      const bid = row?.bid;
+      const ask = row?.ask;
+      const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (ask || bid);
+      if (mid > 0) sessionOpenRef.current[sym] = mid;
+    });
+  }, [ctx.livePrices]);
+
   // Fetch banners on mount
   useEffect(() => {
     fetchBanners();
@@ -768,13 +1032,21 @@ const HomeTab = ({ navigation }) => {
 
   const fetchBanners = async () => {
     try {
-      const res = await fetch(`${API_URL}/banners/active`);
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/banners`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (!res.ok) return;
       const data = await res.json();
-      if (data.success && data.banners?.length > 0) {
-        setBanners(data.banners);
+      const bannerList = data.items || data || [];
+      if (bannerList.length > 0) {
+        setBanners(bannerList);
       }
     } catch (e) {
-      console.log('Error fetching banners:', e);
+      // Silently ignore - banners are optional
     }
   };
 
@@ -805,29 +1077,40 @@ const HomeTab = ({ navigation }) => {
 
   const fetchMasters = async () => {
     try {
-      console.log('MainTradingScreen - Fetching masters from:', `${API_URL}/copy/masters`);
-      const res = await fetch(`${API_URL}/copy/masters`);
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/social/masters`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) { setMasters([]); return; }
       const data = await res.json();
-      console.log('MainTradingScreen - Masters response:', data.masters?.length || 0, 'masters');
-      setMasters(data.masters || []);
+      setMasters(data.items || data.masters || data || []);
     } catch (e) {
-      console.error('Error fetching masters:', e);
+      setMasters([]);
     }
   };
 
   const fetchMySubscriptions = async () => {
-    if (!ctx.user?._id) return;
+    if (!ctx.user?.id && !ctx.user?._id) return;
     try {
-      const res = await fetch(`${API_URL}/copy/my-subscriptions/${ctx.user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/social/subscriptions`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) { setMySubscriptions([]); return; }
       const data = await res.json();
-      setMySubscriptions(data.subscriptions || []);
+      setMySubscriptions(data.items || data.subscriptions || data || []);
     } catch (e) {
-      console.error('Error fetching subscriptions:', e);
+      setMySubscriptions([]);
     }
   };
 
   const isFollowingMaster = (masterId) => {
-    return mySubscriptions.some(sub => sub.masterTraderId?._id === masterId && sub.status === 'ACTIVE');
+    if (!masterId) return false;
+    return mySubscriptions.some(
+      (sub) =>
+        (sub.masterTraderId?._id === masterId || sub.masterTraderId?.id === masterId) &&
+        sub.status === 'ACTIVE'
+    );
   };
 
   const handleFollowMaster = async (master) => {
@@ -837,24 +1120,26 @@ const HomeTab = ({ navigation }) => {
     }
     setIsFollowing(true);
     try {
-      const res = await fetch(`${API_URL}/copy/follow`, {
+      const token = await SecureStore.getItemAsync('token');
+      const masterId = master.id || master._id;
+      const accountId = ctx.selectedAccount.id || ctx.selectedAccount._id;
+      const res = await fetch(`${API_URL}/social/follow`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          userId: ctx.user._id,
-          masterTraderId: master._id,
-          tradingAccountId: ctx.selectedAccount._id,
-          copyMode: 'FIXED_LOT',
-          fixedLotSize: 0.01
+          provider_id: masterId,
+          account_id: accountId,
+          copy_mode: 'fixed_lot',
+          fixed_lot_size: 0.01
         })
       });
-      const data = await res.json();
-      if (data.success) {
-        Alert.alert('Success', `Now following ${master.userId?.firstName || 'Master'}`);
+      if (res.ok) {
+        Alert.alert('Success', `Now following master trader`);
         fetchMySubscriptions();
         setShowMasterModal(false);
       } else {
-        Alert.alert('Error', data.message || 'Failed to follow');
+        const errData = await res.json().catch(() => ({}));
+        Alert.alert('Error', errData.detail || 'Failed to follow');
       }
     } catch (e) {
       Alert.alert('Error', 'Failed to follow master');
@@ -862,52 +1147,47 @@ const HomeTab = ({ navigation }) => {
     setIsFollowing(false);
   };
 
-  // Get market data based on tab - Real gainers/losers from live market data
   const getMarketData = () => {
     const instruments = ctx.instruments || [];
     const prices = ctx.livePrices || {};
-    
-    // Calculate change percentage for each instrument using real market data
-    const withChanges = instruments.map(inst => {
-      const price = prices[inst.symbol];
-      if (!price || !price.ask) return null;
-      
-      // Use prevClose if available, otherwise calculate from open or use bid/ask spread
-      const prevClose = price.prevClose || price.open || price.bid || price.ask;
-      const currentPrice = price.ask;
-      const change = prevClose > 0 ? ((currentPrice - prevClose) / prevClose * 100) : 0;
-      const spread = price.ask && price.bid ? ((price.ask - price.bid) / price.bid * 100) : 0;
-      
-      return { 
-        ...inst, 
-        currentPrice, 
-        change: change !== 0 ? change : (spread > 0.01 ? (Math.random() > 0.5 ? spread : -spread) : 0),
-        bid: price.bid,
-        ask: price.ask
-      };
-    }).filter(inst => inst !== null && inst.currentPrice > 0);
+    const withChanges = instruments
+      .map((inst) => {
+        if (!inst?.symbol) return null;
+        const sym = inst.symbol;
+        const p = prices[sym] || {};
+        const bid = Number(p.bid ?? inst.bid ?? 0);
+        const ask = Number(p.ask ?? inst.ask ?? 0);
+        const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (ask || bid || 0);
+        if (!mid || mid <= 0) return null;
+        let change = 0;
+        const apiPct = p.change_percent ?? p.change_pct ?? p.pct_change ?? p.percent_change;
+        if (apiPct != null && Number.isFinite(Number(apiPct))) {
+          change = Number(apiPct);
+        } else {
+          const open = p.open ?? p.prev_close ?? p.day_open ?? sessionOpenRef.current[sym];
+          if (open && Number(open) > 0) {
+            change = ((mid - Number(open)) / Number(open)) * 100;
+          }
+        }
+        return { ...inst, bid, ask, currentPrice: mid, change };
+      })
+      .filter(Boolean);
 
     if (marketTab === 'gainers') {
-      // Show only positive changes, sorted by highest gain
-      return withChanges
-        .filter(inst => inst.change > 0)
+      return [...withChanges]
+        .filter((i) => i.change > 0)
         .sort((a, b) => b.change - a.change)
-        .slice(0, 8);
-    } else if (marketTab === 'losers') {
-      // Show only negative changes, sorted by biggest loss
-      return withChanges
-        .filter(inst => inst.change < 0)
+        .slice(0, 12);
+    }
+    if (marketTab === 'losers') {
+      return [...withChanges]
+        .filter((i) => i.change < 0)
         .sort((a, b) => a.change - b.change)
-        .slice(0, 8);
+        .slice(0, 12);
     }
-    
-    // Watchlist - show user's starred/favorited instruments
-    const userWatchlist = withChanges.filter(inst => inst.starred);
-    if (userWatchlist.length > 0) {
-      return userWatchlist.slice(0, 8);
-    }
-    // If no watchlist items, show popular instruments as default
-    return withChanges.slice(0, 8);
+    const watch = withChanges.filter((i) => i.starred);
+    if (watch.length > 0) return watch.slice(0, 12);
+    return withChanges.slice(0, 12);
   };
 
   // Refresh accounts when screen gains focus (e.g., after creating new account)
@@ -936,8 +1216,8 @@ const HomeTab = ({ navigation }) => {
 
   if (ctx.loading) {
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#dc2626" />
+      <View style={[styles.centered, { backgroundColor: colors.bgPrimary }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
@@ -947,12 +1227,99 @@ const HomeTab = ({ navigation }) => {
       style={[styles.container, { backgroundColor: colors.bgPrimary }]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
     >
-      {/* Header */}
-      <View style={[styles.homeHeader, { backgroundColor: colors.bgPrimary }]}>
-        <View>
-          <Text style={[styles.greeting, { color: colors.textMuted }]}>Welcome back,</Text>
-          <Text style={[styles.userName, { color: colors.textPrimary }]}>{ctx.user?.firstName || 'Trader'}</Text>
+      {/* Vantage-style header */}
+      <View style={[styles.vantageHeader, { paddingTop: insets.top + 8, backgroundColor: colors.bgPrimary }]}>
+        <View style={styles.vantageHeaderLeft}>
+          <View style={[styles.vantageLogoMark, { backgroundColor: colors.primary }]}>
+            <Text style={styles.vantageLogoLetter}>P</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.liveChip, { backgroundColor: colors.bgCard, borderColor: colors.border }]}
+            onPress={() => parentNav?.navigate('Accounts')}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.liveChipText, { color: colors.textPrimary }]}>
+              {ctx.isChallengeMode ? 'Challenge' : (ctx.selectedAccount?.isDemo || ctx.selectedAccount?.accountTypeId?.isDemo ? 'Demo' : 'Live')}
+            </Text>
+            <Ionicons name="chevron-down" size={14} color={colors.textMuted} />
+          </TouchableOpacity>
         </View>
+        <View style={styles.vantageHeaderRight}>
+          <TouchableOpacity style={styles.headerIconBtn} onPress={() => navigation.navigate('Markets')}>
+            <Ionicons name="search-outline" size={22} color={colors.textPrimary} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.headerIconBtn} onPress={() => parentNav?.navigate('Support')}>
+            <Ionicons name="chatbubble-ellipses-outline" size={22} color={colors.textPrimary} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <TouchableOpacity
+        style={[styles.verifyStrip, { backgroundColor: isDark ? 'rgba(251, 146, 60, 0.14)' : 'rgba(234, 88, 12, 0.12)' }]}
+        onPress={() => parentNav?.navigate('Profile')}
+        activeOpacity={0.85}
+      >
+        <Text style={[styles.verifyStripText, { color: colors.textPrimary }]} numberOfLines={1}>
+          Complete profile & verification
+        </Text>
+        <Text style={styles.verifyStripCta}>Verify</Text>
+        <Ionicons name="chevron-forward" size={16} color="#fb923c" />
+      </TouchableOpacity>
+
+      {/* Hero — equity / setup (light & dark) */}
+      <View style={[styles.heroBlock, { backgroundColor: colors.bgPrimary }]}>
+        <Text style={[styles.heroEquityLabel, { color: colors.textMuted }]}>Equity</Text>
+        <Text style={[styles.heroEquityValue, { color: colors.textPrimary }]}>
+          ${Number(
+            ctx.isChallengeMode
+              ? (ctx.realTimeEquity || 0)
+              : (ctx.realTimeEquity ?? ctx.accountSummary?.equity ?? 0)
+          ).toFixed(2)}
+        </Text>
+        {!ctx.selectedAccount && !ctx.isChallengeMode ? (
+          <>
+            <Text style={[styles.heroHeadline, { color: colors.textPrimary }]}>Set up your account to start trading</Text>
+            <Text style={[styles.heroSub, { color: colors.textSecondary }]}>Access global FX, metals, crypto & indices</Text>
+            <TouchableOpacity
+              style={[styles.heroSetupBtn, { backgroundColor: isDark ? '#f1f5f9' : colors.primary }]}
+              onPress={() => parentNav?.navigate('Accounts')}
+            >
+              <Text style={[styles.heroSetupBtnText, { color: isDark ? '#0f172a' : '#ffffff' }]}>Setup</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <Text style={[styles.heroWelcome, { color: colors.textSecondary }]}>
+            Welcome back, {ctx.user?.firstName || ctx.user?.first_name || 'Trader'}
+          </Text>
+        )}
+      </View>
+
+      {/* Quick row — Vantage-style 4 tiles */}
+      <View style={[styles.vantageQuickRow, { borderColor: colors.border }]}>
+        <TouchableOpacity style={styles.vantageQuickItem} onPress={() => parentNav?.navigate('Portfolio')}>
+          <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
+            <Ionicons name="pie-chart-outline" size={22} color={colors.primary} />
+          </View>
+          <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>Portfolio</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.vantageQuickItem} onPress={() => parentNav?.navigate('Social')}>
+          <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
+            <Ionicons name="people-outline" size={22} color={colors.primary} />
+          </View>
+          <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>Top Traders</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.vantageQuickItem} onPress={() => parentNav?.navigate('Wallet')}>
+          <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
+            <Ionicons name="wallet-outline" size={22} color={colors.success} />
+          </View>
+          <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>Wallet</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.vantageQuickItem} onPress={() => navigation.navigate('More')}>
+          <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
+            <Ionicons name="newspaper-outline" size={22} color={colors.info} />
+          </View>
+          <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>News & more</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Banner Slider */}
@@ -1003,343 +1370,32 @@ const HomeTab = ({ navigation }) => {
         </View>
       )}
 
-      {/* Challenge Info Bar - When in challenge mode */}
-      {ctx.isChallengeMode && ctx.selectedChallengeAccount && (
-        <View style={[styles.challengeInfoBar, { backgroundColor: colors.bgCard, borderColor: '#dc2626' }]}>
-          <View style={styles.challengeInfoRow}>
-            <View style={styles.challengeInfoLeft}>
-              <Ionicons name="trophy" size={14} color="#f59e0b" />
-              <Text style={[styles.challengeInfoName, { color: colors.textPrimary }]} numberOfLines={1}>{ctx.selectedChallengeAccount.challengeId?.name || 'Challenge'}</Text>
-              <Text style={styles.challengeInfoPhase}>Phase {ctx.selectedChallengeAccount.currentStep || 1}/{ctx.selectedChallengeAccount.challengeId?.stepsCount || 2}</Text>
-            </View>
-            <View style={styles.challengeInfoRight}>
-              <Text style={[styles.challengeInfoLabel, { color: colors.textMuted }]}>Daily DD: </Text>
-              <Text style={[styles.challengeInfoValue, { color: (ctx.realTimeDailyDD || 0) > (ctx.selectedChallengeAccount.challengeId?.rules?.maxDailyDrawdownPercent || ctx.selectedChallengeAccount.maxDailyDrawdownPercent || 5) * 0.8 ? '#ef4444' : '#22c55e' }]}>
-                {(ctx.realTimeDailyDD || 0).toFixed(2)}% / {ctx.selectedChallengeAccount.challengeId?.rules?.maxDailyDrawdownPercent || ctx.selectedChallengeAccount.maxDailyDrawdownPercent || 5}%
-              </Text>
-            </View>
-          </View>
-          <View style={styles.challengeInfoRow}>
-            <View style={styles.challengeInfoLeft}>
-              <Text style={[styles.challengeInfoLabel, { color: colors.textMuted }]}>Overall DD: </Text>
-              <Text style={[styles.challengeInfoValue, { color: (ctx.realTimeOverallDD || 0) > (ctx.selectedChallengeAccount.challengeId?.rules?.maxOverallDrawdownPercent || ctx.selectedChallengeAccount.maxOverallDrawdownPercent || 10) * 0.8 ? '#ef4444' : '#22c55e' }]}>
-                {(ctx.realTimeOverallDD || 0).toFixed(2)}% / {ctx.selectedChallengeAccount.challengeId?.rules?.maxOverallDrawdownPercent || ctx.selectedChallengeAccount.maxOverallDrawdownPercent || 10}%
-              </Text>
-            </View>
-            <View style={styles.challengeInfoRight}>
-              <Text style={[styles.challengeInfoLabel, { color: colors.textMuted }]}>Profit: </Text>
-              <Text style={[styles.challengeInfoValue, { color: (ctx.realTimeProfit || 0) >= 0 ? '#22c55e' : '#ef4444' }]}>
-                {(ctx.realTimeProfit || 0).toFixed(2)}% / {ctx.selectedChallengeAccount.challengeId?.rules?.profitTargetPhase1Percent || 10}%
-              </Text>
-            </View>
-          </View>
-        </View>
-      )}
-
-      {/* Challenge Account Card - When in challenge mode */}
-      {ctx.isChallengeMode && ctx.selectedChallengeAccount && (
-        <View style={[styles.accountCard, { 
-          backgroundColor: colors.bgCard, 
-          borderColor: ctx.selectedChallengeAccount.status === 'FAILED' ? '#ef4444' : '#dc2626', 
-          borderWidth: 2 
-        }]}>
-          <TouchableOpacity 
-            style={styles.accountCardHeader}
-            onPress={() => {
-              ctx.setIsChallengeMode(false);
-              ctx.setSelectedChallengeAccount(null);
-              SecureStore.deleteItemAsync('selectedChallengeAccountId');
-            }}
-          >
-            <View style={[styles.accountIconContainer, { 
-              backgroundColor: ctx.selectedChallengeAccount.status === 'FAILED' ? '#ef444440' : '#dc262640' 
-            }]}>
-              <Ionicons 
-                name={ctx.selectedChallengeAccount.status === 'FAILED' ? 'close-circle-outline' : 'trophy-outline'} 
-                size={20} 
-                color={ctx.selectedChallengeAccount.status === 'FAILED' ? '#ef4444' : '#dc2626'} 
-              />
-            </View>
-            <View style={styles.accountInfo}>
-              <Text style={[styles.accountId, { color: colors.textPrimary }]}>{ctx.selectedChallengeAccount.accountId}</Text>
-              <Text style={[styles.accountType, { color: colors.textSecondary }]}>{ctx.selectedChallengeAccount.challengeId?.name || 'Challenge'} • Step {ctx.selectedChallengeAccount.currentStep || 1}</Text>
-            </View>
-            <View style={[styles.challengeBadge, { 
-              backgroundColor: ctx.selectedChallengeAccount.status === 'ACTIVE' ? '#22c55e20' : 
-                              ctx.selectedChallengeAccount.status === 'PASSED' ? '#dc262620' : '#ef444420' 
-            }]}>
-              <Text style={[styles.challengeBadgeText, { 
-                color: ctx.selectedChallengeAccount.status === 'ACTIVE' ? '#22c55e' : 
-                       ctx.selectedChallengeAccount.status === 'PASSED' ? '#dc2626' : '#ef4444' 
-              }]}>
-                {ctx.selectedChallengeAccount.status}
-              </Text>
-            </View>
-          </TouchableOpacity>
-          
-          {/* Show FAILED reason if challenge failed */}
-          {ctx.selectedChallengeAccount.status === 'FAILED' && (
-            <View style={styles.failedReasonContainer}>
-              <Ionicons name="warning-outline" size={18} color="#ef4444" />
-              <Text style={styles.failedReasonText}>
-                {ctx.selectedChallengeAccount.failReason || 'Challenge failed due to rule violation'}
-              </Text>
-            </View>
-          )}
-          
-          {/* Challenge Balance & Equity Row */}
-          <View style={[styles.balanceRow, { borderTopColor: colors.border }]}>
-            <View>
-              <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Balance</Text>
-              <Text style={[styles.balanceValue, { color: colors.textPrimary }]}>${(ctx.selectedChallengeAccount.balance || ctx.selectedChallengeAccount.currentBalance || 0).toFixed(2)}</Text>
-            </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Equity</Text>
-              <Text style={[styles.equityValue, { color: ctx.totalFloatingPnl < 0 ? colors.error : colors.primary }]}>
-                ${ctx.realTimeEquity.toFixed(2)}
-              </Text>
-            </View>
-          </View>
-
-          {/* Challenge Progress Row - Only show if not failed */}
-          {ctx.selectedChallengeAccount.status !== 'FAILED' && (
-            <View style={[styles.pnlRow, { borderTopColor: colors.border }]}>
-              <View>
-                <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Daily Drawdown</Text>
-                <Text style={[styles.pnlValue, { color: (ctx.realTimeDailyDD || 0) > (ctx.selectedChallengeAccount.challengeId?.rules?.maxDailyDrawdownPercent || ctx.selectedChallengeAccount.maxDailyDrawdownPercent || 5) * 0.8 ? colors.error : colors.success }]}>
-                  {(ctx.realTimeDailyDD || 0).toFixed(2)}%
-                </Text>
-              </View>
-              <View style={{ alignItems: 'flex-end' }}>
-                <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Profit Target</Text>
-                <Text style={[styles.freeMarginValue, { color: colors.primary }]}>
-                  {(ctx.realTimeProfit || 0).toFixed(2)}%
-                </Text>
-              </View>
-            </View>
-          )}
-
-          {/* Action Buttons - Different for FAILED vs ACTIVE */}
-          <View style={styles.cardActionButtons}>
-            {ctx.selectedChallengeAccount.status === 'FAILED' ? (
-              <>
-                <TouchableOpacity 
-                  style={[styles.depositBtn, { flex: 1, backgroundColor: '#dc2626' }]}
-                  onPress={() => {
-                    ctx.setIsChallengeMode(false);
-                    ctx.setSelectedChallengeAccount(null);
-                    SecureStore.deleteItemAsync('selectedChallengeAccountId');
-                    navigation.navigate('Accounts', { activeTab: 'challenge' });
-                  }}
-                >
-                  <Ionicons name="trophy-outline" size={16} color="#fff" />
-                  <Text style={styles.depositBtnText}>Buy New Challenge</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[styles.withdrawBtn, { flex: 1 }]}
-                  onPress={() => {
-                    ctx.setIsChallengeMode(false);
-                    ctx.setSelectedChallengeAccount(null);
-                    SecureStore.deleteItemAsync('selectedChallengeAccountId');
-                  }}
-                >
-                  <Ionicons name="swap-horizontal-outline" size={16} color="#dc2626" />
-                  <Text style={styles.withdrawBtnText}>Regular Account</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <TouchableOpacity 
-                style={[styles.depositBtn, { flex: 1 }]}
-                onPress={() => {
-                  ctx.setIsChallengeMode(false);
-                  ctx.setSelectedChallengeAccount(null);
-                  SecureStore.deleteItemAsync('selectedChallengeAccountId');
-                }}
-              >
-                <Ionicons name="swap-horizontal-outline" size={16} color="#fff" />
-                <Text style={styles.depositBtnText}>Switch to Regular Account</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-      )}
-
-      {/* Regular Account Card - When not in challenge mode */}
-      {!ctx.isChallengeMode && ctx.selectedAccount && (
-        <View style={[styles.accountCard, { backgroundColor: colors.bgCard, borderColor: '#dc2626', borderWidth: 2 }]}>
-          <TouchableOpacity style={styles.accountCardHeader} onPress={() => parentNav?.navigate('Accounts')}>
-            <View style={[styles.accountIconContainer, { backgroundColor: colors.primary + '20' }]}>
-              <Ionicons name="person-outline" size={20} color={colors.primary} />
-            </View>
-            <View style={styles.accountInfo}>
-              <Text style={[styles.accountId, { color: colors.textPrimary }]}>{ctx.selectedAccount.accountId}</Text>
-              <Text style={[styles.accountType, { color: colors.textSecondary }]}>{ctx.selectedAccount.accountTypeId?.name || ctx.selectedAccount.accountType || 'Standard'} • {ctx.selectedAccount.leverage || '1:100'}</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
-          </TouchableOpacity>
-          
-          {/* Real-time Balance & Equity Row */}
-          <View style={styles.balanceRow}>
-            <View>
-              <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Balance</Text>
-              <Text style={[styles.balanceValue, { color: colors.textPrimary }]}>${(ctx.accountSummary?.balance || ctx.selectedAccount?.balance || 0).toFixed(2)}</Text>
-            </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Equity</Text>
-              <Text style={[styles.equityValue, { color: ctx.totalFloatingPnl >= 0 ? colors.success : colors.error }]}>
-                ${ctx.realTimeEquity?.toFixed(2) || '0.00'}
-              </Text>
-            </View>
-          </View>
-
-          {/* Real-time P&L Row */}
-          <View style={[styles.pnlRow, { borderTopColor: colors.border }]}>
-            <View>
-              <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Floating P&L</Text>
-              <Text style={[styles.pnlValue, { color: ctx.totalFloatingPnl >= 0 ? colors.success : colors.error }]}>
-                {ctx.totalFloatingPnl >= 0 ? '+' : ''}${ctx.totalFloatingPnl?.toFixed(2) || '0.00'}
-              </Text>
-            </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Free Margin</Text>
-              <Text style={[styles.freeMarginValue, { color: colors.primary }]}>
-                ${ctx.realTimeFreeMargin?.toFixed(2) || '0.00'}
-              </Text>
-            </View>
-          </View>
-
-          {/* Today's P&L Row */}
-          <View style={[styles.pnlRow, { borderTopColor: colors.border }]}>
-            <View>
-              <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Today's P&L</Text>
-              <Text style={[styles.pnlValue, { color: ctx.todayPnl >= 0 ? colors.success : colors.error }]}>
-                {ctx.todayPnl >= 0 ? '+' : ''}${ctx.todayPnl?.toFixed(2) || '0.00'}
-              </Text>
-            </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Used Margin</Text>
-              <Text style={[styles.freeMarginValue, { color: colors.textMuted }]}>
-                ${(ctx.openTrades?.reduce((sum, t) => sum + (t.marginUsed || 0), 0) || 0).toFixed(2)}
-              </Text>
-            </View>
-          </View>
-
-          {/* Deposit/Withdraw or Reset Buttons inside card */}
-          <View style={styles.cardActionButtons}>
-            {ctx.selectedAccount?.isDemo || ctx.selectedAccount?.accountTypeId?.isDemo ? (
-              <TouchableOpacity 
-                style={[styles.depositBtn, { backgroundColor: '#eab308', flex: 1 }]}
-                onPress={() => {
-                  Alert.alert(
-                    'Reset Demo Account',
-                    'Are you sure you want to reset this demo account? All open trades will be closed and balance will be reset.',
-                    [
-                      { text: 'Cancel', style: 'cancel' },
-                      { text: 'Reset', style: 'destructive', onPress: async () => {
-                        try {
-                          const res = await fetch(`${API_URL}/trading-accounts/${ctx.selectedAccount._id}/reset-demo`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' }
-                          });
-                          const data = await res.json();
-                          if (data.success) {
-                            Alert.alert('Success', data.message || 'Demo account reset successfully!');
-                            ctx.refreshAccounts?.();
-                          } else {
-                            Alert.alert('Error', data.message || 'Failed to reset demo account');
-                          }
-                        } catch (error) {
-                          Alert.alert('Error', 'Error resetting demo account');
-                        }
-                      }}
-                    ]
-                  );
-                }}
-              >
-                <Ionicons name="refresh-outline" size={16} color="#000" />
-                <Text style={[styles.depositBtnText, { color: '#000' }]}>Reset</Text>
-              </TouchableOpacity>
-            ) : (
-              <>
-                <TouchableOpacity 
-                  style={[styles.depositBtn, { backgroundColor: colors.primary }]}
-                  onPress={() => parentNav?.navigate('Accounts', { action: 'deposit', accountId: ctx.selectedAccount?._id })}
-                >
-                  <Ionicons name="arrow-down-circle-outline" size={16} color="#fff" />
-                  <Text style={styles.depositBtnText}>Deposit</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[styles.withdrawBtn, { backgroundColor: colors.bgSecondary, borderColor: colors.border }]}
-                  onPress={() => parentNav?.navigate('Accounts', { action: 'withdraw', accountId: ctx.selectedAccount?._id })}
-                >
-                  <Ionicons name="arrow-up-circle-outline" size={16} color={colors.textPrimary} />
-                  <Text style={[styles.withdrawBtnText, { color: colors.textPrimary }]}>Withdraw</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
-        </View>
-      )}
-
-      {/* Quick Actions - 8 Stylish Buttons */}
-      <View style={styles.quickActionsGrid}>
-        <TouchableOpacity style={styles.quickActionBtn} onPress={() => parentNav?.navigate('Accounts')}>
-          <Ionicons name="briefcase-outline" size={24} color={colors.primary} />
-          <Text style={[styles.quickActionBtnLabel, { color: colors.textSecondary }]}>Accounts</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.quickActionBtn} onPress={() => navigation.navigate('Markets')}>
-          <Ionicons name="stats-chart-outline" size={24} color={colors.success} />
-          <Text style={[styles.quickActionBtnLabel, { color: colors.textSecondary }]}>Markets</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.quickActionBtn} onPress={() => navigation.navigate('Trade')}>
-          <Ionicons name="trending-up-outline" size={24} color={colors.info} />
-          <Text style={[styles.quickActionBtnLabel, { color: colors.textSecondary }]}>Trade</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.quickActionBtn} onPress={() => navigation.navigate('Chart')}>
-          <Ionicons name="analytics-outline" size={24} color={isDark ? '#a855f7' : '#7c3aed'} />
-          <Text style={[styles.quickActionBtnLabel, { color: colors.textSecondary }]}>Chart</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.quickActionBtn} onPress={() => parentNav?.navigate('Wallet')}>
-          <Ionicons name="wallet-outline" size={24} color={colors.warning} />
-          <Text style={[styles.quickActionBtnLabel, { color: colors.textSecondary }]}>Wallet</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.quickActionBtn} onPress={() => parentNav?.navigate('CopyTrade')}>
-          <Ionicons name="copy-outline" size={24} color={isDark ? '#ec4899' : '#db2777'} />
-          <Text style={[styles.quickActionBtnLabel, { color: colors.textSecondary }]}>Copy</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.quickActionBtn} onPress={() => parentNav?.navigate('IB')}>
-          <Ionicons name="people-outline" size={24} color={isDark ? '#eab308' : '#ca8a04'} />
-          <Text style={[styles.quickActionBtnLabel, { color: colors.textSecondary }]}>IB</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.quickActionBtn} onPress={() => navigation.navigate('More')}>
-          <Ionicons name="grid-outline" size={24} color={isDark ? '#84cc16' : '#65a30d'} />
-          <Text style={[styles.quickActionBtnLabel, { color: colors.textSecondary }]}>More</Text>
-        </TouchableOpacity>
-      </View>
-
       {/* Copy Trade Masters - Horizontal Scrolling Cards */}
       {masters.length > 0 && (
         <View style={styles.mastersSection}>
-          <View style={styles.sectionHeader}>
-            <View style={styles.sectionTitleRow}>
-              <Ionicons name="trophy-outline" size={18} color={colors.accent} />
-              <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>Top Masters</Text>
-            </View>
-            <TouchableOpacity onPress={() => parentNav?.navigate('CopyTrade')}>
-              <Text style={[styles.seeAllText, { color: colors.primary }]}>See All</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={styles.sectionHeader}
+            onPress={() => parentNav?.navigate('Social')}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.copyTradingTitle, { color: colors.textPrimary }]}>Copy-Trading</Text>
+            <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+          </TouchableOpacity>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.mastersScroll}>
             {masters.slice(0, 10).map((master) => {
-              const following = isFollowingMaster(master._id);
+              const mid = master._id || master.id;
+              const following = isFollowingMaster(mid);
+              const ret = Number(master.stats?.totalProfitGenerated ?? master.stats?.monthlyReturn ?? 0);
+              const positive = ret >= 0;
+              const idKey = String(mid || '');
               return (
-                <TouchableOpacity 
-                  key={master._id} 
-                  style={[styles.masterCard, { backgroundColor: colors.bgCard }]}
+                <TouchableOpacity
+                  key={idKey}
+                  style={[styles.masterCardVantage, { backgroundColor: colors.bgCard, borderColor: colors.border }]}
                   onPress={() => { setSelectedMaster(master); setShowMasterModal(true); }}
                 >
-                  <View style={styles.masterCardHeader}>
-                    <View style={[styles.masterAvatar, { backgroundColor: colors.primary + '30' }]}>
+                  <View style={styles.masterCardTopRow}>
+                    <View style={[styles.masterAvatar, { backgroundColor: colors.primary + '28' }]}>
                       <Text style={[styles.masterAvatarText, { color: colors.primary }]}>
                         {master.userId?.firstName?.charAt(0) || 'M'}
                       </Text>
@@ -1350,15 +1406,14 @@ const HomeTab = ({ navigation }) => {
                       </View>
                     )}
                   </View>
-                  <Text style={[styles.masterName, { color: colors.textPrimary }]} numberOfLines={1}>
-                    {master.userId?.firstName || 'Master'}
+                  <Text style={[styles.masterNameVantage, { color: colors.textPrimary }]} numberOfLines={1}>
+                    {`${master.userId?.firstName || ''} ${master.userId?.lastName || ''}`.trim() || 'Master'}
                   </Text>
-                  <Text style={[styles.masterProfit, { color: colors.success }]}>
-                    +{(master.stats?.totalProfitGenerated || 0).toFixed(0)}%
+                  <Text style={[styles.masterReturnPct, { color: positive ? colors.success : colors.error }]}>
+                    {positive ? '+' : ''}{ret.toFixed(2)}%
                   </Text>
-                  <Text style={[styles.masterFollowers, { color: colors.textMuted }]}>
-                    {master.stats?.totalFollowers || 0} followers
-                  </Text>
+                  <Text style={[styles.masterReturnLabel, { color: colors.textMuted }]}>Return (1M)</Text>
+                  <MiniSparkline seed={idKey} positive={positive} />
                 </TouchableOpacity>
               );
             })}
@@ -1366,82 +1421,102 @@ const HomeTab = ({ navigation }) => {
         </View>
       )}
 
-      {/* Watchlist / Gainers / Losers Section */}
+      {/* Watchlist / Gainers / Losers — Vantage-style tabs + 2-col grid */}
       <View style={styles.marketDataSection}>
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionTitleRow}>
-            <Ionicons name="trending-up-outline" size={18} color={colors.accent} />
-            <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>Markets</Text>
-          </View>
-        </View>
-        
-        {/* Market Tabs */}
-        <View style={[styles.marketTabs, { backgroundColor: colors.bgCard }]}>
-          <TouchableOpacity 
-            style={[styles.marketTab, marketTab === 'watchlist' && [styles.marketTabActive, { backgroundColor: colors.accent }]]}
-            onPress={() => setMarketTab('watchlist')}
-          >
-            <Text style={[styles.marketTabText, { color: colors.textSecondary }, marketTab === 'watchlist' && styles.marketTabTextActive]}>Watchlist</Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={[styles.marketTab, marketTab === 'gainers' && [styles.marketTabActive, { backgroundColor: colors.accent }]]}
-            onPress={() => setMarketTab('gainers')}
-          >
-            <Ionicons name="arrow-up" size={14} color={marketTab === 'gainers' ? '#fff' : colors.success} />
-            <Text style={[styles.marketTabText, { color: colors.textSecondary }, marketTab === 'gainers' && styles.marketTabTextActive]}>Gainers</Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={[styles.marketTab, marketTab === 'losers' && [styles.marketTabActive, { backgroundColor: colors.accent }]]}
-            onPress={() => setMarketTab('losers')}
-          >
-            <Ionicons name="arrow-down" size={14} color={marketTab === 'losers' ? '#fff' : colors.error} />
-            <Text style={[styles.marketTabText, { color: colors.textSecondary }, marketTab === 'losers' && styles.marketTabTextActive]}>Losers</Text>
-          </TouchableOpacity>
+        <View style={styles.vantageMarketTabsRow}>
+          {(['watchlist', 'gainers', 'losers']).map((tab) => (
+            <TouchableOpacity
+              key={tab}
+              style={styles.vantageMarketTabHit}
+              onPress={() => setMarketTab(tab)}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.vantageMarketTabText,
+                  {
+                    color: marketTab === tab ? colors.textPrimary : colors.textMuted,
+                    fontWeight: marketTab === tab ? '700' : '500',
+                  },
+                ]}
+              >
+                {tab === 'watchlist' ? 'Watchlist' : tab === 'gainers' ? 'Gainers' : 'Losers'}
+              </Text>
+              {marketTab === tab && (
+                <View style={[styles.vantageMarketTabUnderline, { backgroundColor: colors.primary }]} />
+              )}
+            </TouchableOpacity>
+          ))}
         </View>
 
-        {/* Market Data List */}
-        <View style={styles.marketList}>
+        <View style={styles.marketGrid}>
           {getMarketData().length === 0 && marketTab === 'watchlist' ? (
-            <View style={styles.emptyWatchlistHome}>
+            <View style={[styles.emptyWatchlistHome, { width: '100%' }]}>
               <Ionicons name="star-outline" size={32} color={colors.textMuted} />
-              <Text style={[styles.emptyWatchlistHomeText, { color: colors.textSecondary }]}>No instruments in watchlist</Text>
-              <Text style={[styles.emptyWatchlistHomeHint, { color: colors.textMuted }]}>Go to Markets and tap ★ to add instruments</Text>
+              <Text style={[styles.emptyWatchlistHomeText, { color: colors.textSecondary }]}>No symbols in watchlist</Text>
+              <Text style={[styles.emptyWatchlistHomeHint, { color: colors.textMuted }]}>Add favourites from Markets</Text>
             </View>
           ) : getMarketData().length === 0 ? (
-            <View style={styles.emptyWatchlistHome}>
+            <View style={[styles.emptyWatchlistHome, { width: '100%' }]}>
               <Ionicons name={marketTab === 'gainers' ? 'trending-up' : 'trending-down'} size={32} color={colors.textMuted} />
-              <Text style={[styles.emptyWatchlistHomeText, { color: colors.textSecondary }]}>No {marketTab} at the moment</Text>
-              <Text style={[styles.emptyWatchlistHomeHint, { color: colors.textMuted }]}>Market data will update in real-time</Text>
+              <Text style={[styles.emptyWatchlistHomeText, { color: colors.textSecondary }]}>No {marketTab} right now</Text>
+              <Text style={[styles.emptyWatchlistHomeHint, { color: colors.textMuted }]}>Pull to refresh or check back shortly</Text>
             </View>
           ) : (
             getMarketData().map((inst) => {
+              if (!inst?.symbol) return null;
               const isPositive = inst.change >= 0;
-              const price = ctx.livePrices[inst.symbol];
-              const decimals = inst.category === 'Forex' ? 5 : 2;
+              const decimals = inst.category === 'Forex' ? 5 : inst.category === 'Crypto' ? 2 : 2;
+              const cardW = (width - 42) / 2;
               return (
-                <TouchableOpacity 
-                  key={inst.symbol} 
-                  style={[styles.marketItem, { borderBottomColor: colors.border }]}
+                <TouchableOpacity
+                  key={inst.symbol}
+                  style={[
+                    styles.marketGridCard,
+                    {
+                      width: cardW,
+                      backgroundColor: colors.bgCard,
+                      borderColor: colors.border,
+                    },
+                  ]}
                   onPress={() => navigation.navigate('Chart')}
+                  activeOpacity={0.85}
                 >
-                  <View style={styles.marketItemLeft}>
-                    <Text style={[styles.marketSymbol, { color: colors.textPrimary }]}>{inst.symbol}</Text>
-                    <Text style={[styles.marketName, { color: colors.textMuted }]} numberOfLines={1}>{inst.name}</Text>
+                  <Text style={[styles.gridSymbol, { color: colors.textPrimary }]}>{inst.symbol}</Text>
+                  <Text style={[styles.gridName, { color: colors.textMuted }]} numberOfLines={1}>{inst.name}</Text>
+                  <View style={styles.gridBottomRow}>
+                    <Text style={[styles.gridCategory, { color: colors.textSecondary }]}>{inst.category || 'Forex'}</Text>
+                    {inst.starred ? (
+                      <Ionicons name="checkmark-circle" size={18} color={colors.primary} />
+                    ) : (
+                      <Ionicons name="ellipse-outline" size={18} color={colors.textMuted} />
+                    )}
                   </View>
-                  <View style={styles.marketItemRight}>
-                    <Text style={[styles.marketPrice, { color: colors.textPrimary }]}>{(price?.ask || 0).toFixed(decimals)}</Text>
-                    <View style={[styles.changeBadge, { backgroundColor: isPositive ? colors.success + '20' : colors.error + '20' }]}>
-                      <Ionicons name={isPositive ? 'arrow-up' : 'arrow-down'} size={10} color={isPositive ? colors.success : colors.error} />
-                      <Text style={[styles.changeText, { color: isPositive ? colors.success : colors.error }]}>
-                        {Math.abs(inst.change).toFixed(2)}%
-                      </Text>
-                    </View>
+                  <Text style={[styles.gridPrice, { color: colors.textPrimary }]}>
+                    {inst.ask ? Number(inst.ask).toFixed(decimals) : '…'}
+                  </Text>
+                  <View style={[styles.gridChangePill, { backgroundColor: isPositive ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)' }]}>
+                    <Text style={{ color: isPositive ? colors.success : colors.error, fontSize: 12, fontWeight: '600' }}>
+                      {isPositive ? '+' : ''}{Number(inst.change || 0).toFixed(2)}%
+                    </Text>
                   </View>
                 </TouchableOpacity>
               );
             })
           )}
         </View>
+
+        <TouchableOpacity
+          style={[
+            styles.addWatchlistPill,
+            { borderColor: isDark ? 'rgba(255,255,255,0.35)' : colors.border },
+          ]}
+          onPress={() => navigation.navigate('Markets')}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="add" size={20} color={colors.textPrimary} />
+          <Text style={[styles.addWatchlistPillText, { color: colors.textPrimary }]}>Add to Watchlist</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Master Detail Modal */}
@@ -1471,7 +1546,7 @@ const HomeTab = ({ navigation }) => {
                   <Text style={[styles.masterProfileBio, { color: colors.textSecondary }]}>
                     {selectedMaster.bio || 'Professional trader with consistent returns'}
                   </Text>
-                  {isFollowingMaster(selectedMaster._id) && (
+                  {isFollowingMaster(selectedMaster._id || selectedMaster.id) && (
                     <View style={styles.followingBadgeLarge}>
                       <Ionicons name="checkmark-circle" size={14} color={colors.success} />
                       <Text style={[styles.followingBadgeLargeText, { color: colors.success }]}>Following</Text>
@@ -1508,7 +1583,7 @@ const HomeTab = ({ navigation }) => {
                 </View>
 
                 {/* Follow Button */}
-                {!isFollowingMaster(selectedMaster._id) ? (
+                {!isFollowingMaster(selectedMaster._id || selectedMaster.id) ? (
                   <TouchableOpacity 
                     style={[styles.followMasterBtn, { backgroundColor: colors.primary }, isFollowing && styles.btnDisabled]}
                     onPress={() => handleFollowMaster(selectedMaster)}
@@ -1533,7 +1608,7 @@ const HomeTab = ({ navigation }) => {
                 {/* View Full Profile */}
                 <TouchableOpacity 
                   style={styles.viewFullProfileBtn}
-                  onPress={() => { setShowMasterModal(false); parentNav?.navigate('CopyTrade'); }}
+                  onPress={() => { setShowMasterModal(false); parentNav?.navigate('Social'); }}
                 >
                   <Text style={[styles.viewFullProfileText, { color: colors.primary }]}>View Full Profile</Text>
                   <Ionicons name="arrow-forward" size={16} color={colors.primary} />
@@ -1544,97 +1619,6 @@ const HomeTab = ({ navigation }) => {
         </View>
       </Modal>
 
-      {/* MarketWatch News */}
-      <View style={styles.marketWatchSection}>
-        <View style={styles.marketWatchHeader}>
-          <View style={styles.marketWatchTitleRow}>
-            <Ionicons name="newspaper-outline" size={20} color={colors.primary} />
-            <Text style={[styles.marketWatchTitle, { color: colors.textPrimary }]}>MarketWatch News</Text>
-          </View>
-          <View style={styles.liveIndicator}>
-            <View style={styles.liveDot} />
-            <Text style={styles.liveText}>LIVE</Text>
-          </View>
-        </View>
-        
-        {/* News Cards - Vertical */}
-        <View style={styles.newsCardsVertical}>
-          {[
-            {
-              id: 1,
-              category: 'Markets',
-              title: 'Fed signals potential rate cuts amid cooling inflation data',
-              description: 'Federal Reserve officials hint at possible monetary policy easing as inflation shows signs of moderating...',
-              time: '5m ago',
-              image: 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=400',
-            },
-            {
-              id: 2,
-              category: 'Crypto',
-              title: 'Bitcoin surges past key resistance as institutional buying accelerates',
-              description: 'Major cryptocurrency rallies as large investors increase positions ahead of halving event...',
-              time: '12m ago',
-              image: 'https://images.unsplash.com/photo-1518546305927-5a555bb7020d?w=400',
-            },
-            {
-              id: 3,
-              category: 'Forex',
-              title: 'EUR/USD volatility spikes on ECB policy divergence',
-              description: 'Euro faces pressure as European Central Bank maintains hawkish stance while Fed pivots...',
-              time: '28m ago',
-              image: 'https://images.unsplash.com/photo-1526304640581-d334cdbbf45e?w=400',
-            },
-            {
-              id: 4,
-              category: 'Commodities',
-              title: 'Gold hits new highs as safe-haven demand increases',
-              description: 'Precious metal reaches record levels amid geopolitical tensions and dollar weakness...',
-              time: '45m ago',
-              image: 'https://images.unsplash.com/photo-1610375461246-83df859d849d?w=400',
-            },
-            {
-              id: 5,
-              category: 'Markets',
-              title: 'Tech stocks lead market rally on strong earnings',
-              description: 'Major indices climb as technology sector reports better-than-expected quarterly results...',
-              time: '1h ago',
-              image: 'https://images.unsplash.com/photo-1590283603385-17ffb3a7f29f?w=400',
-            },
-          ].map((news) => (
-            <TouchableOpacity 
-              key={news.id}
-              style={[styles.newsCardFull, { backgroundColor: colors.bgCard }]}
-              onPress={() => Linking.openURL('https://www.marketwatch.com/latest-news')}
-              activeOpacity={0.8}
-            >
-              <Image 
-                source={{ uri: news.image }}
-                style={styles.newsCardImageFull}
-                resizeMode="cover"
-              />
-              <View style={styles.newsCardContentFull}>
-                <View style={styles.newsCardMeta}>
-                  <View style={styles.newsCategoryBadge}>
-                    <Text style={styles.newsCategoryText}>{news.category}</Text>
-                  </View>
-                  <Text style={[styles.newsTime, { color: colors.textMuted }]}>{news.time}</Text>
-                </View>
-                <Text style={[styles.newsCardTitle, { color: colors.textPrimary }]} numberOfLines={2}>
-                  {news.title}
-                </Text>
-                <Text style={[styles.newsCardDesc, { color: colors.textMuted }]} numberOfLines={3}>
-                  {news.description}
-                </Text>
-                <View style={styles.newsCardFooter}>
-                  <Ionicons name="globe-outline" size={14} color={colors.textMuted} />
-                  <Text style={[styles.newsSource, { color: colors.textMuted }]}>MarketWatch</Text>
-                </View>
-              </View>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
       <View style={{ height: 100 }} />
     </ScrollView>
   );
@@ -1643,7 +1627,7 @@ const HomeTab = ({ navigation }) => {
 // QUOTES TAB - Full Order Panel with all order types
 const QuotesTab = ({ navigation }) => {
   const ctx = React.useContext(TradingContext);
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const toast = useToast();
   const orderScrollRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -1664,6 +1648,65 @@ const QuotesTab = ({ navigation }) => {
   const [showQuickSlModal, setShowQuickSlModal] = useState(false);
   const [quickSlValue, setQuickSlValue] = useState('');
   const [pendingQuickTradeSide, setPendingQuickTradeSide] = useState(null);
+
+  const [sessionStats, setSessionStats] = useState({});
+  const prevBidRef = useRef({});
+  const prevAskRef = useRef({});
+  const [flashBid, setFlashBid] = useState({});
+  const [flashAsk, setFlashAsk] = useState({});
+
+  useEffect(() => {
+    setSessionStats((prev) => {
+      const next = { ...prev };
+      for (const inst of ctx.instruments) {
+        const s = inst.symbol;
+        const lp = ctx.livePrices[s] || ctx.livePrices[String(s).toUpperCase()];
+        const b = lp?.bid ?? inst.bid;
+        if (b == null || !Number.isFinite(b) || b <= 0) continue;
+        const cur = next[s];
+        if (!cur) next[s] = { open: b, high: b, low: b };
+        else next[s] = { ...cur, high: Math.max(cur.high, b), low: Math.min(cur.low, b) };
+      }
+      return next;
+    });
+  }, [ctx.livePrices, ctx.instruments]);
+
+  useEffect(() => {
+    const ub = {};
+    const ua = {};
+    for (const inst of ctx.instruments) {
+      const s = inst.symbol;
+      const lp = ctx.livePrices[s] || ctx.livePrices[String(s).toUpperCase()];
+      const bid = lp?.bid ?? inst.bid;
+      const ask = lp?.ask ?? inst.ask;
+      if (bid != null && Number.isFinite(bid)) {
+        const pb = prevBidRef.current[s];
+        if (pb != null && bid !== pb) ub[s] = bid > pb ? 'up' : 'down';
+        prevBidRef.current[s] = bid;
+      }
+      if (ask != null && Number.isFinite(ask)) {
+        const pa = prevAskRef.current[s];
+        if (pa != null && ask !== pa) ua[s] = ask > pa ? 'up' : 'down';
+        prevAskRef.current[s] = ask;
+      }
+    }
+    if (Object.keys(ub).length === 0 && Object.keys(ua).length === 0) return undefined;
+    setFlashBid((f) => ({ ...f, ...ub }));
+    setFlashAsk((f) => ({ ...f, ...ua }));
+    const t = setTimeout(() => {
+      setFlashBid((f) => {
+        const n = { ...f };
+        Object.keys(ub).forEach((k) => delete n[k]);
+        return n;
+      });
+      setFlashAsk((f) => {
+        const n = { ...f };
+        Object.keys(ua).forEach((k) => delete n[k]);
+        return n;
+      });
+    }, 220);
+    return () => clearTimeout(t);
+  }, [ctx.livePrices, ctx.instruments]);
   
   // Get leverage from account
   const getAccountLeverage = () => {
@@ -1673,7 +1716,7 @@ const QuotesTab = ({ navigation }) => {
     return ctx.selectedAccount?.leverage || ctx.selectedAccount?.accountTypeId?.leverage || '1:100';
   };
   
-  const segments = ['Forex', 'Metals', 'Commodities', 'Crypto'];
+  const segments = ['Forex', 'Metals', 'Commodities', 'Crypto', 'Indices', 'Stocks'];
 
   const openTradePanel = (instrument) => {
     setSelectedInstrument(instrument);
@@ -1695,7 +1738,9 @@ const QuotesTab = ({ navigation }) => {
       ? ctx.selectedChallengeAccount 
       : ctx.selectedAccount;
     
-    if (!selectedInstrument || !hasValidAccount || !ctx.user) return;
+    if (!ctx.user) { toast?.showToast('Please login first', 'error'); return; }
+    if (!hasValidAccount) { toast?.showToast('Please select a trading account first', 'error'); return; }
+    if (!selectedInstrument) { toast?.showToast('Please select an instrument', 'error'); return; }
     if (isExecuting) return;
     
     // Use override values if provided, otherwise use state
@@ -1721,9 +1766,9 @@ const QuotesTab = ({ navigation }) => {
     
     setIsExecuting(true);
     try {
-      const prices = ctx.livePrices[selectedInstrument.symbol];
-      const bid = prices?.bid;
-      const ask = prices?.ask;
+      // Use prices from the selected instrument
+      const bid = selectedInstrument.bid;
+      const ask = selectedInstrument.ask;
       
       // Validate prices
       if (!bid || !ask || bid <= 0 || ask <= 0) {
@@ -1745,40 +1790,46 @@ const QuotesTab = ({ navigation }) => {
       const finalBid = (orderType === 'PENDING' && pendingPrice) ? parseFloat(pendingPrice) : parseFloat(bid);
       const finalAsk = (orderType === 'PENDING' && pendingPrice) ? parseFloat(pendingPrice) : parseFloat(ask);
       
-      // Build order data matching web format
-      // Pending order types: BUY_LIMIT, BUY_STOP, SELL_LIMIT, SELL_STOP
-      // Use challenge account ID if in challenge mode, otherwise use regular account
+      // Build order data for PTD2 backend
+      // PTD2 uses account.id (UUID) not _id
       const tradingAccountId = ctx.isChallengeMode && ctx.selectedChallengeAccount 
-        ? ctx.selectedChallengeAccount._id 
-        : ctx.selectedAccount._id;
+        ? (ctx.selectedChallengeAccount.id || ctx.selectedChallengeAccount._id)
+        : (ctx.selectedAccount.id || ctx.selectedAccount._id);
+      
       const orderData = {
-        userId: ctx.user._id,
-        tradingAccountId: tradingAccountId,
+        account_id: tradingAccountId,
         symbol: selectedInstrument.symbol,
-        segment: segment,
-        side: effectiveSide,
-        orderType: orderType === 'MARKET' ? 'MARKET' : `${effectiveSide}_${pendingType}`,
-        quantity: parseFloat(volume) || 0.01,
-        bid: finalBid,
-        ask: finalAsk,
-        leverage: getAccountLeverage(),
+        side: effectiveSide.toLowerCase(), // PTD2 expects lowercase: "buy" or "sell"
+        order_type: orderType === 'MARKET' ? 'market' : pendingType.toLowerCase(), // "market", "limit", or "stop"
+        lots: parseFloat(volume) || 0.01,
       };
       
-      // Add SL/TP if set (use effectiveStopLoss which includes override from quick trade modal)
-      if (effectiveStopLoss) orderData.sl = parseFloat(effectiveStopLoss);
-      if (takeProfit) orderData.tp = parseFloat(takeProfit);
-
-      console.log('Trade order data:', JSON.stringify(orderData, null, 2));
+      // Add SL/TP if set (PTD2 uses stop_loss and take_profit)
+      if (effectiveStopLoss) orderData.stop_loss = parseFloat(effectiveStopLoss);
+      if (takeProfit) orderData.take_profit = parseFloat(takeProfit);
       
-      const res = await fetch(`${API_URL}/trade/open`, {
+      // Add price for limit/stop orders
+      if (orderType === 'PENDING' && pendingPrice) {
+        orderData.price = parseFloat(pendingPrice);
+      }
+
+      console.log('PTD2 Trade order data:', JSON.stringify(orderData, null, 2));
+      
+      // Get token for authentication
+      const token = await SecureStore.getItemAsync('token');
+      
+      const res = await fetch(`${API_URL}/orders/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify(orderData)
       });
       const data = await res.json();
-      console.log('Trade response:', res.status, JSON.stringify(data, null, 2));
+      console.log('PTD2 Trade response:', res.status, JSON.stringify(data, null, 2));
       
-      if (data.success) {
+      if (res.ok && data) {
         const isChallengeTradeMsg = data.isChallengeAccount ? ' (Challenge)' : '';
         toast?.showToast(`${effectiveSide} ${orderType === 'MARKET' ? 'Market' : pendingType} order placed!${isChallengeTradeMsg}`, 'success');
         setShowOrderPanel(false);
@@ -1789,16 +1840,17 @@ const QuotesTab = ({ navigation }) => {
         ctx.fetchPendingOrders();
         ctx.fetchAccountSummary();
       } else {
-        console.error('Trade failed:', data.message);
-        // Handle challenge-specific error codes
+        // PTD2 backend uses 'detail' (FastAPI standard), fallback to 'message'
+        const errMsg = data.detail || data.message || 'Failed to place order';
+        console.error('Trade failed:', errMsg, data);
         if (data.code === 'DRAWDOWN_BREACH' || data.code === 'DAILY_DRAWDOWN_BREACH') {
-          toast?.showToast(`⚠️ Challenge Failed: ${data.message}`, 'error');
+          toast?.showToast(`⚠️ Challenge Failed: ${errMsg}`, 'error');
         } else if (data.code === 'MAX_LOTS_EXCEEDED' || data.code === 'MIN_LOTS_REQUIRED') {
-          toast?.showToast(`⚠️ Lot Size Error: ${data.message}`, 'warning');
+          toast?.showToast(`⚠️ Lot Size Error: ${errMsg}`, 'warning');
         } else if (data.accountFailed) {
-          toast?.showToast(`❌ Challenge Account Failed: ${data.failReason || data.message}`, 'error');
+          toast?.showToast(`❌ Challenge Account Failed: ${data.failReason || errMsg}`, 'error');
         } else {
-          toast?.showToast(data.message || 'Failed to place order', 'error');
+          toast?.showToast(errMsg, 'error');
         }
       }
     } catch (e) {
@@ -1826,68 +1878,63 @@ const QuotesTab = ({ navigation }) => {
       const matchesSearch = inst.symbol.toLowerCase().includes(searchTerm.toLowerCase()) ||
         inst.name.toLowerCase().includes(searchTerm.toLowerCase());
       // Map 'Energy' from backend to 'Commodities' segment in app
-      const instCategory = inst.category === 'Energy' ? 'Commodities' : inst.category;
+      let instCategory = inst.category === 'Energy' ? 'Commodities' : inst.category;
+      instCategory = normalizeInstrumentCategory(instCategory, inst.symbol);
       return instCategory === segment && matchesSearch;
     });
   };
 
   const renderInstrumentItem = (item) => {
-    const prices = ctx.livePrices[item.symbol] || {};
+    if (!item?.symbol) return null;
+    const sym = item.symbol;
+    const liveTick = ctx.livePrices[sym] || ctx.livePrices[String(sym).toUpperCase()] || {};
+    const bid = liveTick.bid ?? item.bid ?? 0;
+    const ask = liveTick.ask ?? item.ask ?? 0;
+    const spreadPipsText =
+      ctx.adminSpreads[sym]?.spread > 0
+        ? sym.includes('JPY')
+          ? (ctx.adminSpreads[sym].spread * 100).toFixed(1)
+          : bid > 100
+            ? ctx.adminSpreads[sym].spread.toFixed(2)
+            : (ctx.adminSpreads[sym].spread * 10000).toFixed(1)
+        : bid && ask
+          ? ((ask - bid) * (bid > 100 ? 1 : 10000)).toFixed(1)
+          : '—';
+
+    const accent = isDark ? '#50A5F1' : colors.primary;
+
     return (
-      <TouchableOpacity 
-        key={item.symbol}
-        style={[styles.instrumentItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}
-        onPress={() => openTradePanel(item)}
-        activeOpacity={0.7}
-      >
-        <TouchableOpacity 
-          style={styles.starBtn}
-          onPress={() => toggleStar(item.symbol)}
-        >
-          <Ionicons 
-            name={item.starred ? "star" : "star-outline"} 
-            size={18} 
-            color={item.starred ? colors.accent : colors.textMuted} 
-          />
-        </TouchableOpacity>
-        <View style={styles.instrumentInfo}>
-          <Text style={[styles.instrumentSymbol, { color: colors.textPrimary }]}>{item.symbol}</Text>
-          <Text style={[styles.instrumentName, { color: colors.textMuted }]}>{item.name}</Text>
-        </View>
-        <View style={styles.instrumentPriceCol}>
-          <Text style={styles.bidPrice}>{prices.bid?.toFixed(prices.bid > 100 ? 2 : 5) || '...'}</Text>
-          <Text style={[styles.priceLabel, { color: colors.textMuted }]}>Bid</Text>
-        </View>
-        <View style={[styles.spreadBadgeCol, { backgroundColor: colors.bgSecondary, borderColor: colors.border }]}>
-          <Text style={[styles.spreadBadgeText, { color: colors.accent }]}>
-            {ctx.adminSpreads[item.symbol]?.spread > 0 
-              ? (item.symbol.includes('JPY') 
-                  ? (ctx.adminSpreads[item.symbol].spread * 100).toFixed(1)
-                  : prices.bid > 100 
-                    ? ctx.adminSpreads[item.symbol].spread.toFixed(2)
-                    : (ctx.adminSpreads[item.symbol].spread * 10000).toFixed(1))
-              : (prices.bid && prices.ask ? ((prices.ask - prices.bid) * (prices.bid > 100 ? 1 : 10000)).toFixed(1) : '-')}
-          </Text>
-        </View>
-        <View style={styles.instrumentPriceCol}>
-          <Text style={styles.askPrice}>{prices.ask?.toFixed(prices.ask > 100 ? 2 : 5) || '...'}</Text>
-          <Text style={[styles.priceLabel, { color: colors.textMuted }]}>Ask</Text>
-        </View>
-        <TouchableOpacity 
-          style={[styles.chartIconBtn, { backgroundColor: colors.bgSecondary, borderColor: colors.border }]}
-          onPress={() => navigation.navigate('Chart', { symbol: item.symbol })}
-        >
-          <Ionicons name="trending-up" size={18} color={colors.accent} />
-        </TouchableOpacity>
-      </TouchableOpacity>
+      <Mt5QuoteRow
+        key={sym}
+        item={item}
+        liveTick={liveTick}
+        session={sessionStats[sym]}
+        flashBid={flashBid[sym]}
+        flashAsk={flashAsk[sym]}
+        spreadPipsText={spreadPipsText}
+        isDark={isDark}
+        accentColor={accent}
+        colors={colors}
+        onPressRow={() => openTradePanel(item)}
+        onToggleStar={() => toggleStar(sym)}
+        onChart={() => navigation.navigate('Chart', { symbol: sym })}
+      />
     );
   };
+
+  const marketAccent = isDark ? '#50A5F1' : colors.primary;
+  const searchBg = isDark ? 'rgba(255,255,255,0.06)' : colors.bgCard;
+  const searchBorder = isDark ? 'rgba(255,255,255,0.1)' : colors.border;
+  const searchIcon = isDark ? 'rgba(255,255,255,0.45)' : colors.textMuted;
+  const tabInactiveText = isDark ? 'rgba(255,255,255,0.45)' : colors.textSecondary;
+  const segmentBg = isDark ? '#121212' : colors.bgCard;
+  const segmentCountBg = isDark ? 'rgba(255,255,255,0.08)' : colors.bgSecondary;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.bgPrimary }]}>
       {/* Search Bar */}
-      <View style={[styles.marketSearchContainer, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-        <Ionicons name="search" size={20} color={colors.textMuted} />
+      <View style={[styles.marketSearchContainer, { backgroundColor: searchBg, borderColor: searchBorder }]}>
+        <Ionicons name="search" size={20} color={searchIcon} />
         <TextInput
           style={[styles.searchInput, { color: colors.textPrimary }]}
           placeholder="Search instruments..."
@@ -1897,19 +1944,19 @@ const QuotesTab = ({ navigation }) => {
         />
         {searchTerm.length > 0 && (
           <TouchableOpacity onPress={() => setSearchTerm('')}>
-            <Ionicons name="close-circle" size={20} color={colors.textMuted} />
+            <Ionicons name="close-circle" size={20} color={searchIcon} />
           </TouchableOpacity>
         )}
       </View>
 
       {/* Account Selector - Below search bar */}
-      <TouchableOpacity style={[styles.accountSelector, { backgroundColor: colors.bgCard, borderColor: colors.border }]} onPress={() => setShowAccountPicker(true)}>
+      <TouchableOpacity style={[styles.accountSelector, { backgroundColor: searchBg, borderColor: searchBorder }]} onPress={() => setShowAccountPicker(true)}>
         <View style={styles.accountSelectorLeft}>
-          <View style={styles.accountIcon}>
-            <Ionicons name="wallet" size={16} color={colors.accent} />
+          <View style={[styles.accountIcon, { backgroundColor: isDark ? 'rgba(80,165,241,0.15)' : `${colors.primary}18` }]}>
+            <Ionicons name="wallet" size={16} color={marketAccent} />
           </View>
           <View>
-            <Text style={[styles.accountSelectorLabel, { color: colors.textMuted }]}>Account</Text>
+            <Text style={[styles.accountSelectorLabel, { color: colors.textSecondary }]}>Account</Text>
             <Text style={[styles.accountSelectorValue, { color: colors.textPrimary }]}>
               {ctx.isChallengeMode 
                 ? `${ctx.selectedChallengeAccount?.accountId || 'Select'} • $${(ctx.selectedChallengeAccount?.currentBalance || 0).toFixed(2)}`
@@ -1922,34 +1969,34 @@ const QuotesTab = ({ navigation }) => {
       </TouchableOpacity>
 
       {/* Watchlist / Markets Toggle */}
-      <View style={[styles.marketTabsContainer, { backgroundColor: colors.bgSecondary }]}>
+      <View style={[styles.marketTabsContainer, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : colors.bgSecondary }]}>
         <TouchableOpacity
-          style={[styles.marketTabBtn, activeTab === 'watchlist' && { backgroundColor: colors.accent }]}
+          style={[styles.marketTabBtn, activeTab === 'watchlist' && { backgroundColor: marketAccent }]}
           onPress={() => setActiveTab('watchlist')}
         >
-          <Text style={[styles.marketTabText, { color: colors.textMuted }, activeTab === 'watchlist' && styles.marketTabTextActive]}>
+          <Text style={[styles.marketTabText, { color: tabInactiveText }, activeTab === 'watchlist' && styles.marketTabTextActive]}>
             Watchlist
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.marketTabBtn, activeTab === 'markets' && { backgroundColor: colors.accent }]}
+          style={[styles.marketTabBtn, activeTab === 'markets' && { backgroundColor: marketAccent }]}
           onPress={() => setActiveTab('markets')}
         >
-          <Text style={[styles.marketTabText, { color: colors.textMuted }, activeTab === 'markets' && styles.marketTabTextActive]}>
+          <Text style={[styles.marketTabText, { color: tabInactiveText }, activeTab === 'markets' && styles.marketTabTextActive]}>
             Markets
           </Text>
         </TouchableOpacity>
       </View>
 
       {/* Content */}
-      <ScrollView style={styles.marketContent} showsVerticalScrollIndicator={false}>
+      <ScrollView style={[styles.marketContent, { backgroundColor: colors.bgPrimary }]} showsVerticalScrollIndicator={false}>
         {activeTab === 'watchlist' ? (
           <>
             {watchlistInstruments.length === 0 ? (
               <View style={styles.emptyWatchlist}>
                 <Ionicons name="star-outline" size={48} color={colors.textMuted} />
                 <Text style={[styles.emptyWatchlistTitle, { color: colors.textPrimary }]}>No instruments in watchlist</Text>
-                <Text style={[styles.emptyWatchlistText, { color: colors.textMuted }]}>
+                <Text style={[styles.emptyWatchlistText, { color: colors.textSecondary }]}>
                   Tap the star icon on any instrument to add it to your watchlist
                 </Text>
               </View>
@@ -1963,20 +2010,27 @@ const QuotesTab = ({ navigation }) => {
               const segmentInstruments = getSegmentInstruments(segment);
               const isExpanded = expandedSegment === segment;
               return (
-                <View key={segment} style={[styles.segmentContainer, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+                <View key={segment} style={[styles.segmentContainer, { backgroundColor: segmentBg, borderColor: colors.border }]}>
                   <TouchableOpacity 
-                    style={[styles.segmentHeader, { backgroundColor: colors.bgCard }]}
+                    style={[styles.segmentHeader, { backgroundColor: segmentBg }]}
                     onPress={() => setExpandedSegment(isExpanded ? null : segment)}
                     activeOpacity={0.7}
                   >
                     <View style={styles.segmentHeaderLeft}>
                       <Ionicons 
-                        name={segment === 'Forex' ? 'swap-horizontal' : segment === 'Metals' ? 'diamond' : segment === 'Commodities' ? 'flame' : 'logo-bitcoin'} 
-                        size={20} 
-                        color={colors.accent} 
+                        name={
+                          segment === 'Forex' ? 'swap-horizontal'
+                            : segment === 'Metals' ? 'diamond'
+                            : segment === 'Commodities' ? 'flame'
+                            : segment === 'Crypto' ? 'logo-bitcoin'
+                            : segment === 'Indices' ? 'stats-chart'
+                            : 'briefcase'
+                        }
+                        size={20}
+                        color={marketAccent}
                       />
                       <Text style={[styles.segmentTitle, { color: colors.textPrimary }]}>{segment}</Text>
-                      <View style={[styles.segmentCount, { backgroundColor: colors.bgSecondary }]}>
+                      <View style={[styles.segmentCount, { backgroundColor: segmentCountBg }]}>
                         <Text style={[styles.segmentCountText, { color: colors.textMuted }]}>{segmentInstruments.length}</Text>
                       </View>
                     </View>
@@ -2049,16 +2103,16 @@ const QuotesTab = ({ navigation }) => {
                       setQuickSlValue('');
                       setShowQuickSlModal(true);
                     } else {
-                      setOrderSide('SELL'); 
-                      setOrderType('MARKET'); 
-                      executeTrade(); 
+                      setOrderSide('SELL');
+                      setOrderType('MARKET');
+                      executeTrade(null, 'SELL');
                     }
                   }}
                   disabled={isExecuting}
                 >
                   <Text style={styles.quickBtnLabel}>SELL</Text>
                   <Text style={styles.quickBtnPrice}>
-                    {ctx.livePrices[selectedInstrument?.symbol]?.bid?.toFixed(selectedInstrument?.category === 'Forex' ? 5 : 2) || '-'}
+                    {selectedInstrument?.bid ? selectedInstrument.bid.toFixed(selectedInstrument?.category === 'Forex' ? 5 : 2) : '-'}
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity 
@@ -2070,16 +2124,16 @@ const QuotesTab = ({ navigation }) => {
                       setQuickSlValue('');
                       setShowQuickSlModal(true);
                     } else {
-                      setOrderSide('BUY'); 
-                      setOrderType('MARKET'); 
-                      executeTrade(); 
+                      setOrderSide('BUY');
+                      setOrderType('MARKET');
+                      executeTrade(null, 'BUY');
                     }
                   }}
                   disabled={isExecuting}
                 >
                   <Text style={styles.quickBtnLabel}>BUY</Text>
                   <Text style={styles.quickBtnPrice}>
-                    {ctx.livePrices[selectedInstrument?.symbol]?.ask?.toFixed(selectedInstrument?.category === 'Forex' ? 5 : 2) || '-'}
+                    {selectedInstrument?.ask ? selectedInstrument.ask.toFixed(selectedInstrument?.category === 'Forex' ? 5 : 2) : '-'}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -2087,8 +2141,8 @@ const QuotesTab = ({ navigation }) => {
               {/* Spread Info */}
               <View style={styles.spreadInfoRow}>
                 <Text style={[styles.spreadInfoText, { color: colors.textMuted }]}>
-                  Spread: {ctx.livePrices[selectedInstrument?.symbol]?.bid ? 
-                    ((ctx.livePrices[selectedInstrument?.symbol]?.ask - ctx.livePrices[selectedInstrument?.symbol]?.bid) * 
+                  Spread: {selectedInstrument?.bid ? 
+                    ((selectedInstrument?.ask - selectedInstrument?.bid) * 
                     (selectedInstrument?.category === 'Forex' ? 10000 : 1)).toFixed(1) : '-'} pips
                 </Text>
               </View>
@@ -2222,7 +2276,7 @@ const QuotesTab = ({ navigation }) => {
                     placeholder="Optional"
                     placeholderTextColor={colors.textMuted}
                     keyboardType="numbers-and-punctuation"
-                    selectionColor="#dc2626"
+                    selectionColor="#2563EB"
                     onFocus={() => {
                       setTimeout(() => {
                         orderScrollRef.current?.scrollToEnd({ animated: true });
@@ -2239,7 +2293,7 @@ const QuotesTab = ({ navigation }) => {
                     placeholder="Optional"
                     placeholderTextColor={colors.textMuted}
                     keyboardType="numbers-and-punctuation"
-                    selectionColor="#dc2626"
+                    selectionColor="#2563EB"
                     onFocus={() => {
                       setTimeout(() => {
                         orderScrollRef.current?.scrollToEnd({ animated: true });
@@ -2253,7 +2307,7 @@ const QuotesTab = ({ navigation }) => {
               <View style={styles.finalTradeRow}>
                 <TouchableOpacity 
                   style={[styles.finalSellBtn, isExecuting && styles.btnDisabled]}
-                  onPress={() => { setOrderSide('SELL'); executeTrade(); }}
+                  onPress={() => executeTrade(null, 'SELL')}
                   disabled={isExecuting}
                 >
                   <Text style={styles.finalBtnText}>
@@ -2262,7 +2316,7 @@ const QuotesTab = ({ navigation }) => {
                 </TouchableOpacity>
                 <TouchableOpacity 
                   style={[styles.finalBuyBtn, isExecuting && styles.btnDisabled]}
-                  onPress={() => { setOrderSide('BUY'); executeTrade(); }}
+                  onPress={() => executeTrade(null, 'BUY')}
                   disabled={isExecuting}
                 >
                   <Text style={styles.finalBtnText}>
@@ -2312,7 +2366,7 @@ const QuotesTab = ({ navigation }) => {
                       </View>
                       <View style={styles.accountPickerItemRight}>
                         <Text style={[styles.accountPickerBalance, { color: colors.textPrimary }]}>${(account.balance || 0).toFixed(2)}</Text>
-                        {!ctx.isChallengeMode && ctx.selectedAccount?._id === account._id && (
+                        {!ctx.isChallengeMode && (ctx.selectedAccount?.id === account.id || ctx.selectedAccount?._id === account._id) && (
                           <Ionicons name="checkmark-circle" size={20} color={colors.accent} />
                         )}
                       </View>
@@ -2328,7 +2382,7 @@ const QuotesTab = ({ navigation }) => {
                   {ctx.challengeAccounts.filter(acc => acc.status === 'ACTIVE').map(account => (
                     <TouchableOpacity 
                       key={account._id}
-                      style={[styles.accountPickerItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border, borderLeftWidth: 3, borderLeftColor: '#dc2626' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && styles.accountPickerItemActive]}
+                      style={[styles.accountPickerItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border, borderLeftWidth: 3, borderLeftColor: '#2563EB' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && styles.accountPickerItemActive]}
                       onPress={() => { 
                         ctx.setIsChallengeMode(true);
                         ctx.setSelectedChallengeAccount(account); 
@@ -2336,8 +2390,8 @@ const QuotesTab = ({ navigation }) => {
                       }}
                     >
                       <View style={styles.accountPickerItemLeft}>
-                        <View style={[styles.accountPickerIcon, { backgroundColor: '#dc262620' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && { backgroundColor: '#dc262640' }]}>
-                          <Ionicons name="trophy" size={20} color="#dc2626" />
+                        <View style={[styles.accountPickerIcon, { backgroundColor: '#2563EB20' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && { backgroundColor: '#2563EB40' }]}>
+                          <Ionicons name="trophy" size={20} color="#2563EB" />
                         </View>
                         <View>
                           <Text style={[styles.accountPickerNumber, { color: colors.textPrimary }]}>{account.accountId}</Text>
@@ -2346,8 +2400,8 @@ const QuotesTab = ({ navigation }) => {
                       </View>
                       <View style={styles.accountPickerItemRight}>
                         <Text style={[styles.accountPickerBalance, { color: colors.textPrimary }]}>${(account.currentBalance || account.balance || 0).toFixed(2)}</Text>
-                        {ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && (
-                          <Ionicons name="checkmark-circle" size={20} color="#dc2626" />
+                        {ctx.isChallengeMode && (ctx.selectedChallengeAccount?.id === account.id || ctx.selectedChallengeAccount?._id === account._id) && (
+                          <Ionicons name="checkmark-circle" size={20} color="#2563EB" />
                         )}
                       </View>
                     </TouchableOpacity>
@@ -2444,9 +2498,11 @@ const QuotesTab = ({ navigation }) => {
 // TRADE TAB - Account summary + Positions/Pending/History (like mobile web view)
 const TradeTab = () => {
   const ctx = React.useContext(TradingContext);
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const toast = useToast();
   const [tradeTab, setTradeTab] = useState('positions');
+  const [refreshing, setRefreshing] = useState(false);
   const [showSlTpModal, setShowSlTpModal] = useState(false);
   const [selectedTrade, setSelectedTrade] = useState(null);
   const [stopLoss, setStopLoss] = useState('');
@@ -2465,12 +2521,12 @@ const TradeTab = () => {
   // History filter states
   const [historyFilter, setHistoryFilter] = useState('all');
 
-  const totalUsedMargin = ctx.openTrades.reduce((sum, trade) => sum + (trade.marginUsed || 0), 0);
+  const totalUsedMargin = (Array.isArray(ctx.openTrades) ? ctx.openTrades : []).reduce((sum, trade) => sum + (trade.marginUsed || 0), 0);
   
   // Filter trade history based on selected filter
   const getFilteredHistory = () => {
     const now = new Date();
-    return ctx.tradeHistory.filter(trade => {
+    return (Array.isArray(ctx.tradeHistory) ? ctx.tradeHistory : []).filter(trade => {
       const tradeDate = new Date(trade.closedAt);
       if (historyFilter === 'all') return true;
       if (historyFilter === 'today') {
@@ -2516,26 +2572,29 @@ const TradeTab = () => {
       return;
     }
     
-    setClosingTradeId(trade._id);
+    setClosingTradeId(trade.id || trade._id);
     try {
-      const res = await fetch(`${API_URL}/trade/close`, {
+      const token = await SecureStore.getItemAsync('token');
+      const positionId = trade.id || trade._id;
+      
+      const res = await fetch(`${API_URL}/positions/${positionId}/close`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tradeId: trade._id,
-          bid: prices.bid,
-          ask: prices.ask
-        })
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
       });
       const data = await res.json();
-      if (data.success) {
-        const pnl = data.trade?.realizedPnl || data.realizedPnl || 0;
+      console.log('[PTD2] Close position response:', data);
+      
+      if (res.ok) {
+        const pnl = data.profit || 0;
         toast?.showToast(`Closed! P/L: $${pnl.toFixed(2)}`, pnl >= 0 ? 'success' : 'warning');
         ctx.fetchOpenTrades();
         ctx.fetchTradeHistory();
         ctx.fetchAccountSummary();
       } else {
-        toast?.showToast(data.message || 'Failed to close', 'error');
+        toast?.showToast(data.detail || data.message || 'Failed to close', 'error');
       }
     } catch (e) {
       console.error('Close trade error:', e);
@@ -2553,7 +2612,9 @@ const TradeTab = () => {
 
   const confirmCloseAll = async () => {
     setIsClosingAll(true);
-    const tradesToClose = ctx.openTrades.filter(trade => {
+    const safeOpenTrades = Array.isArray(ctx.openTrades) ? ctx.openTrades : [];
+    const tradesToClose = safeOpenTrades.filter(trade => {
+      if (!trade) return false;
       const pnl = calculatePnl(trade);
       if (closeAllType === 'profit') return pnl > 0;
       if (closeAllType === 'loss') return pnl < 0;
@@ -2561,22 +2622,18 @@ const TradeTab = () => {
     });
 
     let closedCount = 0;
+    const token = await SecureStore.getItemAsync('token');
     for (const trade of tradesToClose) {
-      const prices = ctx.livePrices[trade.symbol];
-      if (!prices?.bid || !prices?.ask) continue;
-      
       try {
-        const res = await fetch(`${API_URL}/trade/close`, {
+        const positionId = trade.id || trade._id;
+        const res = await fetch(`${API_URL}/positions/${positionId}/close`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tradeId: trade._id,
-            bid: prices.bid,
-            ask: prices.ask
-          })
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          }
         });
-        const data = await res.json();
-        if (data.success) closedCount++;
+        if (res.ok) closedCount++;
       } catch (e) {
         console.error('Close trade error:', e);
       }
@@ -2596,33 +2653,32 @@ const TradeTab = () => {
     let closedTrades = 0;
     let cancelledOrders = 0;
 
-    // Close all open trades
-    for (const trade of ctx.openTrades) {
-      const prices = ctx.livePrices[trade.symbol];
-      if (!prices?.bid || !prices?.ask) continue;
+    // Close all open trades via PTD2
+    const token = await SecureStore.getItemAsync('token');
+    const safeOpenTrades = Array.isArray(ctx.openTrades) ? ctx.openTrades : [];
+    for (const trade of safeOpenTrades) {
       try {
-        const res = await fetch(`${API_URL}/trade/close`, {
+        const positionId = trade.id || trade._id;
+        const res = await fetch(`${API_URL}/positions/${positionId}/close`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tradeId: trade._id, bid: prices.bid, ask: prices.ask })
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
         });
-        const data = await res.json();
-        if (data.success) closedTrades++;
+        if (res.ok) closedTrades++;
       } catch (e) {
         console.error('Kill switch close error:', e);
       }
     }
 
-    // Cancel all pending orders
-    for (const order of ctx.pendingOrders) {
+    // Cancel all pending orders via PTD2
+    const safePendingOrders = Array.isArray(ctx.pendingOrders) ? ctx.pendingOrders : [];
+    for (const order of safePendingOrders) {
       try {
-        const res = await fetch(`${API_URL}/trade/cancel`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tradeId: order._id })
+        const orderId = order.id || order._id;
+        const res = await fetch(`${API_URL}/orders/${orderId}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
         });
-        const data = await res.json();
-        if (data.success) cancelledOrders++;
+        if (res.ok) cancelledOrders++;
       } catch (e) {
         console.error('Kill switch cancel error:', e);
       }
@@ -2640,8 +2696,8 @@ const TradeTab = () => {
   const openSlTpModal = (trade) => {
     setSelectedTrade(trade);
     // Check both sl/stopLoss and tp/takeProfit fields for compatibility (like web app)
-    setStopLoss((trade.sl || trade.stopLoss)?.toString() || '');
-    setTakeProfit((trade.tp || trade.takeProfit)?.toString() || '');
+    setStopLoss((trade.sl || trade.stopLoss || trade.stop_loss)?.toString() || '');
+    setTakeProfit((trade.tp || trade.takeProfit || trade.take_profit)?.toString() || '');
     setShowSlTpModal(true);
   };
 
@@ -2651,27 +2707,31 @@ const TradeTab = () => {
       const slValue = stopLoss && stopLoss.trim() !== '' ? parseFloat(stopLoss) : null;
       const tpValue = takeProfit && takeProfit.trim() !== '' ? parseFloat(takeProfit) : null;
       
-      console.log('Updating SL/TP:', { tradeId: selectedTrade._id, sl: slValue, tp: tpValue });
+      const positionId = selectedTrade.id || selectedTrade._id;
+      console.log('Updating SL/TP:', { positionId, stop_loss: slValue, take_profit: tpValue });
       
-      const res = await fetch(`${API_URL}/trade/modify`, {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/positions/${positionId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({
-          tradeId: selectedTrade._id,
-          sl: slValue,
-          tp: tpValue
+          stop_loss: slValue,
+          take_profit: tpValue
         })
       });
       const data = await res.json();
-      console.log('SL/TP update response:', data);
-      
-      if (data.success) {
+      console.log('[PTD2] SL/TP update response:', data);
+
+      if (res.ok) {
         toast?.showToast('SL/TP updated successfully', 'success');
         setShowSlTpModal(false);
         setSelectedTrade(null);
         ctx.fetchOpenTrades();
       } else {
-        toast?.showToast(data.message || 'Failed to update SL/TP', 'error');
+        toast?.showToast(data.detail || data.message || 'Failed to update SL/TP', 'error');
       }
     } catch (e) {
       console.error('Update SL/TP error:', e);
@@ -2683,19 +2743,20 @@ const TradeTab = () => {
   const [cancellingOrderId, setCancellingOrderId] = useState(null);
   const cancelPendingOrder = async (order) => {
     if (cancellingOrderId) return;
-    setCancellingOrderId(order._id);
+    const orderId = order.id || order._id;
+    setCancellingOrderId(orderId);
     try {
-      const res = await fetch(`${API_URL}/trade/cancel`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tradeId: order._id })
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/orders/${orderId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       });
-      const data = await res.json();
-      if (data.success) {
+      if (res.ok) {
         toast?.showToast('Order cancelled', 'success');
         ctx.fetchPendingOrders();
       } else {
-        toast?.showToast(data.message || 'Failed to cancel order', 'error');
+        const errData = await res.json().catch(() => ({}));
+        toast?.showToast(errData.detail || 'Failed to cancel order', 'error');
       }
     } catch (e) {
       toast?.showToast('Network error', 'error');
@@ -2704,81 +2765,213 @@ const TradeTab = () => {
     }
   };
 
+  const accountDisplay =
+    ctx.isChallengeMode
+      ? String(ctx.selectedChallengeAccount?.name || ctx.selectedChallengeAccount?.accountId || ctx.selectedChallengeAccount?.accountNumber || 'Challenge')
+      : String(ctx.selectedAccount?.accountId || ctx.selectedAccount?.accountNumber || ctx.selectedAccount?.label || '—');
+
+  const onTradeRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        ctx.fetchOpenTrades(),
+        ctx.fetchPendingOrders(),
+        ctx.fetchTradeHistory(),
+        ctx.fetchAccountSummary(),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const escapeCsv = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+
+  const exportTradeCsv = async () => {
+    let csv = '';
+    if (tradeTab === 'positions') {
+      csv = ['ACCOUNT', 'SYMBOL', 'SIDE', 'QTY', 'OPEN', 'CURRENT', 'FLOATING_PNL'].join(',') + '\n';
+      (Array.isArray(ctx.openTrades) ? ctx.openTrades : []).forEach((t) => {
+        const prices = ctx.livePrices[t.symbol];
+        const cur = t.side === 'BUY' ? prices?.bid : prices?.ask;
+        const pnl = ctx.calculatePnl(t);
+        csv +=
+          [
+            escapeCsv(accountDisplay),
+            escapeCsv(t.symbol),
+            escapeCsv(t.side),
+            escapeCsv(t.quantity),
+            escapeCsv(t.openPrice != null ? Number(t.openPrice).toFixed(5) : ''),
+            escapeCsv(cur != null ? Number(cur).toFixed(5) : ''),
+            escapeCsv(pnl.toFixed(2)),
+          ].join(',') + '\n';
+      });
+    } else if (tradeTab === 'pending') {
+      csv = ['ACCOUNT', 'SYMBOL', 'TYPE', 'QTY', 'PRICE'].join(',') + '\n';
+      (Array.isArray(ctx.pendingOrders) ? ctx.pendingOrders : []).forEach((o) => {
+        csv +=
+          [
+            escapeCsv(accountDisplay),
+            escapeCsv(o.symbol),
+            escapeCsv(o.orderType),
+            escapeCsv(o.quantity),
+            escapeCsv(o.pendingPrice != null ? Number(o.pendingPrice).toFixed(5) : ''),
+          ].join(',') + '\n';
+      });
+    } else {
+      csv = ['ACCOUNT', 'SYMBOL', 'SIDE', 'QTY', 'OPEN', 'CLOSE', 'REALIZED_PNL', 'CLOSED_AT'].join(',') + '\n';
+      getFilteredHistory().forEach((t) => {
+        csv +=
+          [
+            escapeCsv(accountDisplay),
+            escapeCsv(t.symbol),
+            escapeCsv(t.side),
+            escapeCsv(t.quantity),
+            escapeCsv(t.openPrice != null ? Number(t.openPrice).toFixed(5) : ''),
+            escapeCsv(t.closePrice != null ? Number(t.closePrice).toFixed(5) : ''),
+            escapeCsv((t.realizedPnl ?? 0).toFixed(2)),
+            escapeCsv(t.closedAt ? new Date(t.closedAt).toISOString() : ''),
+          ].join(',') + '\n';
+      });
+    }
+    try {
+      await Share.share({ message: csv, title: 'trades-export.csv' });
+    } catch (e) {
+      if (e?.message !== 'User did not share') {
+        toast?.showToast('Could not export', 'error');
+      }
+    }
+  };
+
+  const balanceVal = Number(
+    ctx.accountSummary.balance ||
+      (ctx.isChallengeMode ? ctx.selectedChallengeAccount?.balance : ctx.selectedAccount?.balance) ||
+      0
+  );
+  const creditVal = Number(ctx.accountSummary.credit || 0);
+  const floatPl = ctx.totalFloatingPnl ?? 0;
+  const floatColor = floatPl >= 0 ? colors.accent : colors.lossColor;
+  const todayPnlVal = Number(ctx.todayPnl ?? 0);
+  const todayPnlColor = todayPnlVal >= 0 ? colors.profitColor : colors.lossColor;
+
   return (
-    <View style={[styles.container, { backgroundColor: colors.bgPrimary }]}>
-      {/* Account Summary - Like mobile web view */}
-      <View style={[styles.accountSummaryList, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-        <View style={styles.summaryRow}>
-          <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Balance</Text>
-          <Text style={[styles.summaryValue, { color: colors.textPrimary }]}>{(ctx.accountSummary.balance || (ctx.isChallengeMode ? ctx.selectedChallengeAccount?.balance : ctx.selectedAccount?.balance) || 0).toFixed(2)}</Text>
-        </View>
-        <View style={styles.summaryRow}>
-          <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Equity</Text>
-          <Text style={[styles.summaryValue, { color: ctx.totalFloatingPnl >= 0 ? '#22c55e' : '#ef4444' }]}>
-            {ctx.realTimeEquity.toFixed(2)}
-          </Text>
-        </View>
-        <View style={styles.summaryRow}>
-          <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Credit</Text>
-          <Text style={[styles.summaryValue, { color: colors.textPrimary }]}>{(ctx.accountSummary.credit || 0).toFixed(2)}</Text>
-        </View>
-        <View style={styles.summaryRow}>
-          <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Used Margin</Text>
-          <Text style={[styles.summaryValue, { color: colors.textPrimary }]}>{totalUsedMargin.toFixed(2)}</Text>
-        </View>
-        <View style={styles.summaryRow}>
-          <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Free Margin</Text>
-          <Text style={[styles.summaryValue, { color: colors.accent }]}>
-            {ctx.realTimeFreeMargin.toFixed(2)}
-          </Text>
-        </View>
-        <View style={styles.summaryRow}>
-          <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Floating PL</Text>
-          <Text style={[styles.summaryValue, { color: ctx.totalFloatingPnl >= 0 ? '#22c55e' : '#ef4444' }]}>
-            {ctx.totalFloatingPnl.toFixed(2)}
-          </Text>
-        </View>
-        <View style={styles.summaryRow}>
-          <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Today's P&L</Text>
-          <Text style={[styles.summaryValue, { color: ctx.todayPnl >= 0 ? '#22c55e' : '#ef4444' }]}>
-            {ctx.todayPnl >= 0 ? '+' : ''}{ctx.todayPnl?.toFixed(2) || '0.00'}
-          </Text>
-        </View>
-      </View>
-
-      {/* Trade Tabs - Positions / Pending / History */}
-      <View style={[styles.tradeTabs, { backgroundColor: colors.bgSecondary }]}>
-        {['positions', 'pending', 'history'].map(tab => (
-          <TouchableOpacity
-            key={tab}
-            style={[styles.tradeTabBtn, tradeTab === tab && styles.tradeTabBtnActive]}
-            onPress={() => setTradeTab(tab)}
+    <View style={[styles.tradeDashRoot, { backgroundColor: isDark ? colors.bgPrimary : colors.bgPrimary }]}>
+      {/* Top strip — scroll for all account stats */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={true}
+        style={styles.tradeSummaryStrip}
+        contentContainerStyle={[
+          styles.tradeSummaryStripContent,
+          { paddingTop: Math.max(insets.top, 12) + 8, paddingBottom: 12 },
+        ]}
+      >
+        {[
+          { label: 'Balance', value: balanceVal.toFixed(2), valueColor: colors.textPrimary },
+          { label: 'Equity', value: ctx.realTimeEquity.toFixed(2), valueColor: colors.textPrimary },
+          { label: 'Credit', value: creditVal.toFixed(2), valueColor: colors.textPrimary },
+          { label: 'Used Margin', value: totalUsedMargin.toFixed(2), valueColor: colors.textPrimary },
+          { label: 'Free Margin', value: ctx.realTimeFreeMargin.toFixed(2), valueColor: colors.accent },
+          { label: 'Floating PL', value: `${floatPl >= 0 ? '+' : ''}${floatPl.toFixed(2)}`, valueColor: floatColor },
+          { label: "Today's P&L", value: `${todayPnlVal >= 0 ? '+' : ''}${todayPnlVal.toFixed(2)}`, valueColor: todayPnlColor },
+        ].map((s) => (
+          <View
+            key={s.label}
+            style={[
+              styles.tradeStatPill,
+              {
+                backgroundColor: isDark ? colors.bgCard : colors.bgSecondary,
+                borderColor: colors.border,
+              },
+            ]}
           >
-            <Text style={[styles.tradeTabText, { color: colors.textMuted }, tradeTab === tab && styles.tradeTabTextActive]}>
-              {tab === 'positions' ? `Positions (${ctx.openTrades.length})` :
-               tab === 'pending' ? `Pending (${ctx.pendingOrders.length})` : 'History'}
+            <Text style={[styles.tradeStatLabel, { color: colors.textSecondary }]}>{s.label}</Text>
+            <Text style={[styles.tradeStatValue, { color: s.valueColor }]} numberOfLines={1}>
+              {s.value}
             </Text>
-          </TouchableOpacity>
+          </View>
         ))}
-      </View>
+      </ScrollView>
 
-      {/* Close All Buttons - Only show when positions tab is active and has trades */}
-      {tradeTab === 'positions' && ctx.openTrades.length > 0 && (
-        <View style={[styles.closeAllRow, { backgroundColor: colors.bgSecondary }]}>
-          <TouchableOpacity style={styles.closeAllBtn} onPress={() => closeAllTrades('all')}>
-            <Text style={styles.closeAllText}>Close All ({ctx.openTrades.length})</Text>
+      <View
+        style={[
+          styles.tradeDashCard,
+          {
+            backgroundColor: colors.bgCard,
+            borderColor: colors.border,
+            shadowColor: isDark ? '#000' : '#0f172a',
+          },
+        ]}
+      >
+        {/* Open | Pending | History */}
+        <View style={[styles.tradeDashTabsRow, { borderBottomColor: colors.border }]}>
+          {[
+            { id: 'positions', title: 'Open', count: ctx.openTrades?.length ?? 0 },
+            { id: 'pending', title: 'Pending', count: ctx.pendingOrders?.length ?? 0 },
+            { id: 'history', title: 'History', count: ctx.tradeHistory?.length ?? 0 },
+          ].map((tab) => (
+            <TouchableOpacity
+              key={tab.id}
+              style={styles.tradeDashTabHit}
+              onPress={() => setTradeTab(tab.id)}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.tradeDashTabLabel,
+                  { color: colors.textMuted },
+                  tradeTab === tab.id && { color: colors.primary, fontWeight: '700' },
+                ]}
+              >
+                {tab.title} ({tab.count})
+              </Text>
+              {tradeTab === tab.id ? (
+                <View style={[styles.tradeDashTabUnderline, { backgroundColor: colors.primary }]} />
+              ) : (
+                <View style={styles.tradeDashTabUnderlinePlaceholder} />
+              )}
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Toolbar: refresh + CSV */}
+        <View style={[styles.tradeToolbarRow, { borderBottomColor: colors.border }]}>
+          <TouchableOpacity
+            style={[styles.tradeToolOutlineBtn, { borderColor: colors.border }]}
+            onPress={onTradeRefresh}
+            disabled={refreshing}
+          >
+            {refreshing ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Ionicons name="refresh-outline" size={20} color={colors.primary} />
+            )}
+            <Text style={[styles.tradeToolBtnLabel, { color: colors.textPrimary }]}>Refresh</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.closeProfitBtn} onPress={() => closeAllTrades('profit')}>
-            <Text style={styles.closeProfitText}>Close Profit</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.closeLossBtn} onPress={() => closeAllTrades('loss')}>
-            <Text style={styles.closeLossText}>Close Loss</Text>
+          <TouchableOpacity style={[styles.tradeToolOutlineBtn, { borderColor: colors.border }]} onPress={exportTradeCsv}>
+            <Ionicons name="download-outline" size={20} color={colors.primary} />
+            <Text style={[styles.tradeToolBtnLabel, { color: colors.textPrimary }]}>CSV</Text>
           </TouchableOpacity>
         </View>
-      )}
 
-      {/* Content */}
-      <ScrollView style={styles.tradesList}>
+        {tradeTab === 'positions' && ctx.openTrades.length > 0 && (
+          <View style={[styles.closeAllRow, { backgroundColor: colors.bgSecondary, borderBottomColor: colors.border, borderBottomWidth: 1 }]}>
+            <TouchableOpacity style={styles.closeAllBtn} onPress={() => closeAllTrades('all')}>
+              <Text style={styles.closeAllText}>Close All ({ctx.openTrades.length})</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.closeProfitBtn} onPress={() => closeAllTrades('profit')}>
+              <Text style={styles.closeProfitText}>Close Profit</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.closeLossBtn} onPress={() => closeAllTrades('loss')}>
+              <Text style={styles.closeLossText}>Close Loss</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        <ScrollView
+          style={styles.tradesList}
+          nestedScrollEnabled
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onTradeRefresh} tintColor={colors.primary} />}
+        >
         {tradeTab === 'positions' && (
           ctx.openTrades.length === 0 ? (
             <View style={styles.emptyState}>
@@ -2786,31 +2979,29 @@ const TradeTab = () => {
               <Text style={[styles.emptyText, { color: colors.textMuted }]}>No open positions</Text>
             </View>
           ) : (
-            ctx.openTrades.map(trade => {
+            ctx.openTrades.map((trade) => {
               const pnl = ctx.calculatePnl(trade);
               const prices = ctx.livePrices[trade.symbol];
               const currentPrice = trade.side === 'BUY' ? prices?.bid : prices?.ask;
-              
-              const renderRightActions = (progress, dragX) => {
-                return (
-                  <TouchableOpacity 
-                    style={styles.swipeCloseBtn} 
-                    onPress={() => closeTrade(trade)}
-                  >
-                    <Ionicons name="close-circle" size={24} color="#fff" />
-                    <Text style={styles.swipeCloseText}>Close</Text>
-                  </TouchableOpacity>
-                );
-              };
-              
+
+              const renderRightActions = () => (
+                <TouchableOpacity style={styles.swipeCloseBtn} onPress={() => closeTrade(trade)}>
+                  <Ionicons name="close-circle" size={24} color="#fff" />
+                  <Text style={styles.swipeCloseText}>Close</Text>
+                </TouchableOpacity>
+              );
+
               return (
-                <Swipeable 
-                  key={trade._id} 
+                <Swipeable
+                  key={trade._id || trade.id}
                   renderRightActions={renderRightActions}
                   rightThreshold={40}
                   overshootRight={false}
                 >
-                  <TouchableOpacity style={[styles.positionItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]} onPress={() => { setDetailTrade(trade); setShowTradeDetails(true); }}>
+                  <TouchableOpacity
+                    style={[styles.positionItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}
+                    onPress={() => { setDetailTrade(trade); setShowTradeDetails(true); }}
+                  >
                     <View style={styles.positionRow}>
                       <View style={styles.positionInfo}>
                         <View style={styles.positionSymbolRow}>
@@ -2827,7 +3018,7 @@ const TradeTab = () => {
                         )}
                       </View>
                       <View style={styles.positionActions}>
-                        <TouchableOpacity style={styles.editBtn} onPress={(e) => { e.stopPropagation(); openSlTpModal(trade); }}>
+                        <TouchableOpacity style={styles.editBtn} onPress={(e) => { e.stopPropagation?.(); openSlTpModal(trade); }}>
                           <Ionicons name="pencil" size={16} color={colors.accent} />
                         </TouchableOpacity>
                       </View>
@@ -2852,8 +3043,8 @@ const TradeTab = () => {
               <Text style={[styles.emptyText, { color: colors.textMuted }]}>No pending orders</Text>
             </View>
           ) : (
-            ctx.pendingOrders.map(order => (
-              <View key={order._id} style={[styles.positionItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}>
+            ctx.pendingOrders.map((order) => (
+              <View key={order._id || order.id} style={[styles.positionItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}>
                 <View style={styles.positionRow}>
                   <View style={styles.positionInfo}>
                     <View style={styles.positionSymbolRow}>
@@ -2869,10 +3060,10 @@ const TradeTab = () => {
                       </Text>
                     )}
                   </View>
-                  <TouchableOpacity 
-                    style={[styles.cancelOrderBtn, cancellingOrderId === order._id && styles.btnDisabled]} 
+                  <TouchableOpacity
+                    style={[styles.cancelOrderBtn, cancellingOrderId === (order.id || order._id) && styles.btnDisabled]}
                     onPress={() => cancelPendingOrder(order)}
-                    disabled={cancellingOrderId === order._id}
+                    disabled={cancellingOrderId === (order.id || order._id)}
                   >
                     <Ionicons name="close-circle" size={20} color={colors.accent} />
                     <Text style={[styles.cancelOrderText, { color: colors.accent }]}>Cancel</Text>
@@ -2932,9 +3123,9 @@ const TradeTab = () => {
                 <Text style={[styles.emptyText, { color: colors.textMuted }]}>No trade history</Text>
               </View>
             ) : (
-              getFilteredHistory().map(trade => (
-                <TouchableOpacity 
-                  key={trade._id} 
+              getFilteredHistory().map((trade) => (
+                <TouchableOpacity
+                  key={trade._id || trade.id}
                   style={[styles.historyItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}
                   onPress={() => { setHistoryDetailTrade(trade); setShowHistoryDetails(true); }}
                 >
@@ -2962,6 +3153,7 @@ const TradeTab = () => {
           </>
         )}
       </ScrollView>
+      </View>
 
       {/* SL/TP Modal */}
       <Modal visible={showSlTpModal} animationType="slide" transparent onRequestClose={() => setShowSlTpModal(false)}>
@@ -2997,7 +3189,7 @@ const TradeTab = () => {
                 returnKeyType="next"
                 autoCorrect={false}
                 autoCapitalize="none"
-                selectionColor="#dc2626"
+                selectionColor="#2563EB"
                 editable={true}
               />
             </View>
@@ -3014,7 +3206,7 @@ const TradeTab = () => {
                 returnKeyType="done"
                 autoCorrect={false}
                 autoCapitalize="none"
-                selectionColor="#dc2626"
+                selectionColor="#2563EB"
                 editable={true}
                 onSubmitEditing={updateSlTp}
               />
@@ -3112,7 +3304,7 @@ const TradeTab = () => {
                   <Text style={[styles.detailSectionTitle, { color: colors.primary }]}>Stop Loss / Take Profit</Text>
                   <View style={[styles.detailRow, { borderBottomColor: colors.border }]}>
                     <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Stop Loss</Text>
-                    <Text style={[styles.detailValue, { color: (detailTrade.sl || detailTrade.stopLoss) ? '#dc2626' : colors.textMuted }]}>
+                    <Text style={[styles.detailValue, { color: (detailTrade.sl || detailTrade.stopLoss) ? '#2563EB' : colors.textMuted }]}>
                       {detailTrade.sl || detailTrade.stopLoss || 'Not Set'}
                     </Text>
                   </View>
@@ -3171,7 +3363,7 @@ const TradeTab = () => {
                     style={styles.detailEditBtn} 
                     onPress={() => { setShowTradeDetails(false); openSlTpModal(detailTrade); }}
                   >
-                    <Ionicons name="pencil" size={18} color="#dc2626" />
+                    <Ionicons name="pencil" size={18} color="#2563EB" />
                     <Text style={styles.detailEditText}>Edit SL/TP</Text>
                   </TouchableOpacity>
                   <TouchableOpacity 
@@ -3192,8 +3384,8 @@ const TradeTab = () => {
       <Modal visible={showCloseAllModal} animationType="fade" transparent onRequestClose={() => setShowCloseAllModal(false)}>
         <View style={styles.confirmModalOverlay}>
           <View style={styles.confirmModalContent}>
-            <View style={[styles.confirmModalIcon, { backgroundColor: closeAllType === 'profit' ? '#dc262620' : closeAllType === 'loss' ? '#dc262620' : '#dc262620' }]}>
-              <Ionicons name={closeAllType === 'profit' ? 'trending-up' : closeAllType === 'loss' ? 'trending-down' : 'close-circle'} size={32} color={closeAllType === 'profit' ? '#dc2626' : closeAllType === 'loss' ? '#dc2626' : '#dc2626'} />
+            <View style={[styles.confirmModalIcon, { backgroundColor: closeAllType === 'profit' ? '#2563EB20' : closeAllType === 'loss' ? '#2563EB20' : '#2563EB20' }]}>
+              <Ionicons name={closeAllType === 'profit' ? 'trending-up' : closeAllType === 'loss' ? 'trending-down' : 'close-circle'} size={32} color={closeAllType === 'profit' ? '#2563EB' : closeAllType === 'loss' ? '#2563EB' : '#2563EB'} />
             </View>
             <Text style={styles.confirmModalTitle}>
               {closeAllType === 'all' && 'Close All Trades?'}
@@ -3210,7 +3402,7 @@ const TradeTab = () => {
                 <Text style={styles.confirmCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity 
-                style={[styles.confirmCloseBtn, { backgroundColor: closeAllType === 'profit' ? '#dc2626' : closeAllType === 'loss' ? '#dc2626' : '#dc2626' }, isClosingAll && styles.btnDisabled]} 
+                style={[styles.confirmCloseBtn, { backgroundColor: closeAllType === 'profit' ? '#2563EB' : closeAllType === 'loss' ? '#2563EB' : '#2563EB' }, isClosingAll && styles.btnDisabled]} 
                 onPress={confirmCloseAll}
                 disabled={isClosingAll}
               >
@@ -3304,7 +3496,7 @@ const TradeTab = () => {
                   <Text style={[styles.detailSectionTitle, { color: colors.primary }]}>Stop Loss / Take Profit</Text>
                   <View style={[styles.detailRow, { borderBottomColor: colors.border }]}>
                     <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Stop Loss</Text>
-                    <Text style={[styles.detailValue, { color: (historyDetailTrade.sl || historyDetailTrade.stopLoss) ? '#dc2626' : colors.textMuted }]}>
+                    <Text style={[styles.detailValue, { color: (historyDetailTrade.sl || historyDetailTrade.stopLoss) ? '#2563EB' : colors.textMuted }]}>
                       {historyDetailTrade.sl || historyDetailTrade.stopLoss || 'Not Set'}
                     </Text>
                   </View>
@@ -3399,7 +3591,7 @@ const HistoryTab = () => {
       style={styles.container}
       data={ctx.tradeHistory}
       keyExtractor={item => item._id}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#dc2626" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2563EB" />}
       ListEmptyComponent={
         <View style={styles.emptyState}>
           <Ionicons name="document-text-outline" size={48} color="#666" />
@@ -3411,8 +3603,8 @@ const HistoryTab = () => {
           <View style={styles.historyHeader}>
             <View style={styles.historyLeft}>
               <Text style={styles.historySymbol}>{item.symbol}</Text>
-              <View style={[styles.sideBadge, { backgroundColor: item.side === 'BUY' ? '#dc262620' : '#dc262620' }]}>
-                <Text style={[styles.sideText, { color: item.side === 'BUY' ? '#dc2626' : '#dc2626' }]}>{item.side}</Text>
+              <View style={[styles.sideBadge, { backgroundColor: item.side === 'BUY' ? '#22c55e20' : '#ef444420' }]}>
+                <Text style={[styles.sideText, { color: item.side === 'BUY' ? '#22c55e' : '#ef4444' }]}>{item.side}</Text>
               </View>
               {item.closedBy === 'ADMIN' && (
                 <View style={styles.adminBadge}>
@@ -3436,22 +3628,28 @@ const HistoryTab = () => {
   );
 };
 
+/** Segments for Add Chart flow (match instrument `category` from API). */
+const CHART_ADD_SYMBOL_SEGMENTS = ['Forex', 'Metals', 'Commodities', 'Crypto', 'Indices', 'Stocks'];
+
 // CHART TAB - Full screen TradingView chart with multiple chart tabs
 const ChartTab = ({ route }) => {
   const ctx = React.useContext(TradingContext);
   const { colors, isDark } = useTheme();
   const toast = useToast();
   
-  // Get initial symbol from route params or default to XAUUSD
-  const initialSymbol = route?.params?.symbol || 'XAUUSD';
+  // Get initial symbol from route params or default to XAUUSD (always uppercase for API / livePrices keys)
+  const initialSymbol = String(route?.params?.symbol || 'XAUUSD').trim().toUpperCase();
   const [chartTabs, setChartTabs] = useState([{ symbol: initialSymbol, id: 1 }]);
   const [activeTabId, setActiveTabId] = useState(1);
   const [showSymbolPicker, setShowSymbolPicker] = useState(false);
+  /** Add Chart modal: pick segment first, then symbol */
+  const [chartAddStep, setChartAddStep] = useState('segments');
+  const [chartAddSegment, setChartAddSegment] = useState(null);
   
   // Handle symbol change from navigation params
   React.useEffect(() => {
     if (route?.params?.symbol) {
-      const symbol = route.params.symbol;
+      const symbol = String(route.params.symbol).trim().toUpperCase();
       // Check if symbol already exists in tabs
       const existingTab = chartTabs.find(t => t.symbol === symbol);
       if (existingTab) {
@@ -3485,14 +3683,39 @@ const ChartTab = ({ route }) => {
   };
 
   const activeTab = chartTabs.find(t => t.id === activeTabId) || chartTabs[0];
-  const activeSymbol = activeTab?.symbol || 'XAUUSD';
+  const activeSymbol = String(activeTab?.symbol || 'XAUUSD').trim().toUpperCase();
+
+  const resetChartSymbolPicker = () => {
+    setChartAddStep('segments');
+    setChartAddSegment(null);
+  };
 
   const addNewChartTab = (symbol) => {
+    const sym = String(symbol || '').trim().toUpperCase();
     const newId = Math.max(...chartTabs.map(t => t.id)) + 1;
-    setChartTabs([...chartTabs, { symbol, id: newId }]);
+    setChartTabs([...chartTabs, { symbol: sym, id: newId }]);
     setActiveTabId(newId);
     setShowSymbolPicker(false);
+    resetChartSymbolPicker();
   };
+
+  const instrumentsInChartSegment = React.useMemo(() => {
+    if (!chartAddSegment) return [];
+    const list = ctx.instruments || [];
+    return list
+      .filter((i) => String(i.category || 'Forex') === chartAddSegment)
+      .sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)));
+  }, [ctx.instruments, chartAddSegment]);
+
+  const segmentSymbolCounts = React.useMemo(() => {
+    const counts = {};
+    CHART_ADD_SYMBOL_SEGMENTS.forEach((s) => { counts[s] = 0; });
+    for (const inst of ctx.instruments || []) {
+      const c = String(inst.category || 'Forex');
+      if (counts[c] !== undefined) counts[c] += 1;
+    }
+    return counts;
+  }, [ctx.instruments]);
 
   const removeChartTab = (id) => {
     if (chartTabs.length > 1) {
@@ -3504,8 +3727,15 @@ const ChartTab = ({ route }) => {
     }
   };
 
-  const currentInstrument = ctx.instruments.find(i => i.symbol === activeSymbol) || ctx.instruments[0];
-  const currentPrice = ctx.livePrices[activeSymbol];
+  const currentInstrument =
+    ctx.instruments.find((i) => String(i?.symbol || '').toUpperCase() === activeSymbol) || null;
+  const liveTick = ctx.livePrices[activeSymbol] || ctx.livePrices[String(activeSymbol).toUpperCase()] || {};
+  const bidNum = Number(liveTick.bid ?? currentInstrument?.bid ?? 0);
+  const askNum = Number(liveTick.ask ?? currentInstrument?.ask ?? 0);
+  const currentPrice = {
+    bid: Number.isFinite(bidNum) && bidNum > 0 ? bidNum : 0,
+    ask: Number.isFinite(askNum) && askNum > 0 ? askNum : 0,
+  };
   const isForex = currentInstrument?.category === 'Forex';
   const decimals = isForex ? 5 : 2;
 
@@ -3528,9 +3758,19 @@ const ChartTab = ({ route }) => {
     setShowOrderPanel(true);
   };
 
-  // One-click trade execution - Fast execution
+  // One-click trade execution - Fast execution (same endpoint as Quotes tab: /orders/)
   const executeOneClickTrade = async (side, slPrice = null) => {
     if (isExecuting) return;
+
+    const hasValidAccount = ctx.isChallengeMode ? ctx.selectedChallengeAccount : ctx.selectedAccount;
+    if (!ctx.user) {
+      toast?.showToast('Please login first', 'error');
+      return;
+    }
+    if (!hasValidAccount) {
+      toast?.showToast('Please select a trading account first', 'error');
+      return;
+    }
     
     // Check if challenge mode with SL mandatory
     if (ctx.isChallengeMode && ctx.selectedChallengeAccount?.challengeId?.rules?.stopLossMandatory && !slPrice) {
@@ -3540,60 +3780,43 @@ const ChartTab = ({ route }) => {
       return;
     }
     
-    if (!ctx.selectedAccount && !ctx.selectedChallengeAccount) {
-      toast?.showToast('Please select a trading account first', 'error');
-      return;
-    }
-    if (!currentPrice?.bid || !currentPrice?.ask) {
-      toast?.showToast('No price data available', 'error');
+    if (!currentPrice.bid || !currentPrice.ask || currentPrice.bid <= 0 || currentPrice.ask <= 0) {
+      toast?.showToast('Market is closed or no price data available', 'error');
       return;
     }
     
     setIsExecuting(true);
     try {
       const price = side === 'BUY' ? currentPrice.ask : currentPrice.bid;
-      const segment = currentInstrument?.category || 'Forex';
       
+      const tradingAccountId = ctx.isChallengeMode && ctx.selectedChallengeAccount 
+          ? (ctx.selectedChallengeAccount.id || ctx.selectedChallengeAccount._id)
+          : (ctx.selectedAccount.id || ctx.selectedAccount._id);
+
       const orderData = {
-        userId: ctx.user?._id,
-        tradingAccountId: ctx.isChallengeMode && ctx.selectedChallengeAccount 
-          ? ctx.selectedChallengeAccount._id 
-          : ctx.selectedAccount._id,
+        account_id: tradingAccountId,
         symbol: activeSymbol,
-        segment: segment,
-        side: side,
-        quantity: volume,
-        bid: currentPrice.bid,
-        ask: currentPrice.ask,
-        leverage: ctx.isChallengeMode ? ctx.selectedChallengeAccount?.leverage : ctx.selectedAccount?.leverage || '1:100',
-        orderType: 'MARKET'
+        side: side.toLowerCase(),
+        order_type: 'market',
+        lots: parseFloat(volume) || 0.01,
       };
       
-      // Add SL if provided
-      if (slPrice) {
-        orderData.sl = parseFloat(slPrice);
-      }
+      if (slPrice) orderData.stop_loss = parseFloat(slPrice);
       
-      const res = await fetch(`${API_URL}/trade/open`, {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/orders/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(orderData)
       });
-      const data = await res.json();
-      if (data.success) {
-        const isChallengeMsg = data.isChallengeAccount ? ' (Challenge)' : '';
-        toast?.showToast(`${side} ${volume} ${activeSymbol} @ ${price.toFixed(decimals)}${isChallengeMsg}`, 'success');
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data) {
+        toast?.showToast(`${side} ${volume} ${activeSymbol} @ ${price.toFixed(decimals)}`, 'success');
         ctx.fetchOpenTrades();
+        ctx.fetchPendingOrders?.();
         ctx.fetchAccountSummary();
       } else {
-        // Handle challenge-specific error codes
-        if (data.code === 'DRAWDOWN_BREACH' || data.code === 'DAILY_DRAWDOWN_BREACH') {
-          toast?.showToast(`⚠️ Challenge Failed: ${data.message}`, 'error');
-        } else if (data.accountFailed) {
-          toast?.showToast(`❌ Challenge Account Failed: ${data.failReason || data.message}`, 'error');
-        } else {
-          toast?.showToast(data.message || 'Failed to place order', 'error');
-        }
+        toast?.showToast(data.detail || data.message || 'Failed to place order', 'error');
       }
     } catch (e) {
       toast?.showToast('Network error', 'error');
@@ -3603,6 +3826,20 @@ const ChartTab = ({ route }) => {
   };
 
   const executeTrade = async () => {
+    const hasValidAccount = ctx.isChallengeMode ? ctx.selectedChallengeAccount : ctx.selectedAccount;
+    if (!ctx.user) {
+      toast?.showToast('Please login first', 'error');
+      return;
+    }
+    if (!hasValidAccount) {
+      toast?.showToast('Please select a trading account first', 'error');
+      return;
+    }
+    if (!currentPrice.bid || !currentPrice.ask || currentPrice.bid <= 0 || currentPrice.ask <= 0) {
+      toast?.showToast('Market is closed or no price data available', 'error');
+      return;
+    }
+
     // Client-side validation for challenge account SL mandatory rule
     if (ctx.isChallengeMode && ctx.selectedChallengeAccount) {
       const rules = ctx.selectedChallengeAccount.challengeId?.rules;
@@ -3614,56 +3851,40 @@ const ChartTab = ({ route }) => {
     
     setIsExecuting(true);
     try {
-      const price = orderSide === 'BUY' ? currentPrice?.ask : currentPrice?.bid;
-      const segment = currentInstrument?.category || 'Forex';
-      
       // Use challenge account ID if in challenge mode
       const tradingAccountId = ctx.isChallengeMode && ctx.selectedChallengeAccount 
-        ? ctx.selectedChallengeAccount._id 
-        : ctx.selectedAccount?._id;
+        ? (ctx.selectedChallengeAccount.id || ctx.selectedChallengeAccount._id)
+        : (ctx.selectedAccount?.id || ctx.selectedAccount?._id);
       
       const orderData = {
-        userId: ctx.user?._id,
-        tradingAccountId: tradingAccountId,
+        account_id: tradingAccountId,
         symbol: activeSymbol,
-        segment: segment,
-        side: orderSide,
-        quantity: volume,
-        bid: currentPrice?.bid,
-        ask: currentPrice?.ask,
-        leverage: ctx.selectedAccount?.leverage || '1:100',
-        orderType: 'MARKET'
+        side: orderSide.toLowerCase(),
+        order_type: 'market',
+        lots: parseFloat(volume) || 0.01,
       };
       
-      // Add SL/TP if set
-      if (stopLoss) orderData.sl = parseFloat(stopLoss);
-      if (takeProfit) orderData.tp = parseFloat(takeProfit);
+      // Add SL/TP if set (PTD2 uses stop_loss/take_profit)
+      if (stopLoss) orderData.stop_loss = parseFloat(stopLoss);
+      if (takeProfit) orderData.take_profit = parseFloat(takeProfit);
       
-      const res = await fetch(`${API_URL}/trade/open`, {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/orders/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(orderData)
       });
-      const data = await res.json();
-      if (data.success) {
-        const isChallengeMsg = data.isChallengeAccount ? ' (Challenge)' : '';
-        toast?.showToast(`${orderSide} order placed!${isChallengeMsg}`, 'success');
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data) {
+        toast?.showToast(`${orderSide} order placed!`, 'success');
         setShowOrderPanel(false);
         setStopLoss('');
         setTakeProfit('');
         ctx.fetchOpenTrades();
+        ctx.fetchPendingOrders?.();
         ctx.fetchAccountSummary();
       } else {
-        // Handle challenge-specific error codes
-        if (data.code === 'DRAWDOWN_BREACH' || data.code === 'DAILY_DRAWDOWN_BREACH') {
-          toast?.showToast(`Challenge Failed: ${data.message}`, 'error');
-        } else if (data.code === 'SL_MANDATORY') {
-          toast?.showToast('⚠️ Stop Loss is mandatory for this challenge', 'warning');
-        } else if (data.accountFailed) {
-          toast?.showToast(`Challenge Account Failed: ${data.failReason || data.message}`, 'error');
-        } else {
-          toast?.showToast(data.message || 'Failed to place order', 'error');
-        }
+        toast?.showToast(data.detail || data.message || 'Failed to place order', 'error');
       }
     } catch (e) {
       toast?.showToast('Network error', 'error');
@@ -3673,7 +3894,7 @@ const ChartTab = ({ route }) => {
   };
 
   const chartTheme = isDark ? 'dark' : 'light';
-  const chartBg = isDark ? '#0a0a0a' : '#ffffff';
+  const chartBg = isDark ? '#121212' : '#ffffff';
   
   const chartHtml = `
     <!DOCTYPE html>
@@ -3743,13 +3964,19 @@ const ChartTab = ({ route }) => {
             </TouchableOpacity>
           ))}
         </ScrollView>
-        <TouchableOpacity style={styles.addChartBtn} onPress={() => setShowSymbolPicker(true)}>
+        <TouchableOpacity
+          style={styles.addChartBtn}
+          onPress={() => {
+            resetChartSymbolPicker();
+            setShowSymbolPicker(true);
+          }}
+        >
           <Ionicons name="add" size={20} color={colors.textMuted} />
         </TouchableOpacity>
       </View>
 
-      {/* Quick Trade Bar - Screenshot Style: SELL price | - lot + | BUY price */}
-      <View style={[styles.quickTradeBarTop, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}>
+      {/* Quick Trade Bar - Screenshot Style: SELL price | - lot + | BUY price (elevated so WebView does not steal touches on Android) */}
+      <View style={[styles.quickTradeBarTop, { backgroundColor: colors.bgCard, borderBottomColor: colors.border, zIndex: 10, elevation: Platform.OS === 'android' ? 8 : 0 }]}>
         {/* SELL Button with Price */}
         <TouchableOpacity 
           style={[styles.sellPriceBtn, isExecuting && styles.btnDisabled]}
@@ -3808,13 +4035,14 @@ const ChartTab = ({ route }) => {
       </View>
 
       {/* Full Screen Chart */}
-      <View style={styles.chartWrapper}>
+      <View style={[styles.chartWrapper, { zIndex: 0 }]}>
         <WebView
           key={`${activeSymbol}-${isDark}`}
           source={{ html: chartHtml }}
           style={{ flex: 1, backgroundColor: chartBg }}
           javaScriptEnabled={true}
           scrollEnabled={false}
+          androidLayerType="hardware"
         />
       </View>
 
@@ -3870,7 +4098,7 @@ const ChartTab = ({ route }) => {
                     Stop Loss {ctx.selectedChallengeAccount.challengeId?.rules?.stopLossMandatory ? '*' : ''}
                   </Text>
                   <TextInput
-                    style={[styles.slTpInput, { backgroundColor: '#1a1a1a', color: '#fff', borderColor: '#333' }]}
+                    style={[styles.slTpInput, { backgroundColor: '#333333', color: '#fff', borderColor: '#333' }]}
                     value={stopLoss}
                     onChangeText={(text) => setStopLoss(text.replace(/[^0-9.]/g, ''))}
                     placeholder="0.00"
@@ -3881,7 +4109,7 @@ const ChartTab = ({ route }) => {
                 <View style={styles.slTpInputGroup}>
                   <Text style={styles.inputLabel}>Take Profit</Text>
                   <TextInput
-                    style={[styles.slTpInput, { backgroundColor: '#1a1a1a', color: '#fff', borderColor: '#333' }]}
+                    style={[styles.slTpInput, { backgroundColor: '#333333', color: '#fff', borderColor: '#333' }]}
                     value={takeProfit}
                     onChangeText={(text) => setTakeProfit(text.replace(/[^0-9.]/g, ''))}
                     placeholder="0.00"
@@ -3910,30 +4138,94 @@ const ChartTab = ({ route }) => {
         </View>
       </Modal>
 
-      {/* Symbol Picker Modal - Add new chart */}
-      <Modal visible={showSymbolPicker} animationType="slide" transparent>
+      {/* Symbol Picker Modal - segment first, then symbols (themed) */}
+      <Modal
+        visible={showSymbolPicker}
+        animationType="slide"
+        transparent
+        onRequestClose={() => {
+          setShowSymbolPicker(false);
+          resetChartSymbolPicker();
+        }}
+      >
         <View style={styles.modalOverlay}>
-          <View style={styles.symbolPickerModal}>
-            <View style={styles.symbolPickerHeader}>
-              <Text style={styles.symbolPickerTitle}>Add Chart</Text>
-              <TouchableOpacity onPress={() => setShowSymbolPicker(false)}>
-                <Ionicons name="close" size={24} color="#fff" />
+          <View style={[styles.symbolPickerModal, { backgroundColor: colors.bgCard }]}>
+            <View style={[styles.symbolPickerHeader, { borderBottomColor: colors.border }]}>
+              <View style={styles.symbolPickerHeaderLeft}>
+                {chartAddStep === 'symbols' ? (
+                  <TouchableOpacity
+                    onPress={() => {
+                      setChartAddStep('segments');
+                      setChartAddSegment(null);
+                    }}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    style={styles.symbolPickerBackBtn}
+                  >
+                    <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
+                  </TouchableOpacity>
+                ) : null}
+                <Text style={[styles.symbolPickerTitle, { color: colors.textPrimary }]}>
+                  {chartAddStep === 'segments' ? 'Add Chart' : chartAddSegment || 'Symbols'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowSymbolPicker(false);
+                  resetChartSymbolPicker();
+                }}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Ionicons name="close" size={24} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
-            <ScrollView>
-              {ctx.instruments.map(inst => (
-                <TouchableOpacity
-                  key={inst.symbol}
-                  style={[styles.symbolPickerItem, chartTabs.some(t => t.symbol === inst.symbol) && styles.symbolPickerItemActive]}
-                  onPress={() => addNewChartTab(inst.symbol)}
-                >
-                  <View>
-                    <Text style={styles.symbolPickerSymbol}>{inst.symbol}</Text>
-                    <Text style={styles.symbolPickerName}>{inst.name}</Text>
-                  </View>
-                  {chartTabs.some(t => t.symbol === inst.symbol) && <Ionicons name="checkmark" size={20} color="#dc2626" />}
-                </TouchableOpacity>
-              ))}
+            <ScrollView keyboardShouldPersistTaps="handled">
+              {chartAddStep === 'segments'
+                ? CHART_ADD_SYMBOL_SEGMENTS.map((seg) => (
+                    <TouchableOpacity
+                      key={seg}
+                      style={[styles.chartAddSegmentRow, { borderBottomColor: colors.border }]}
+                      onPress={() => {
+                        setChartAddSegment(seg);
+                        setChartAddStep('symbols');
+                      }}
+                    >
+                      <Text style={[styles.chartAddSegmentLabel, { color: colors.textPrimary }]}>{seg}</Text>
+                      <View style={styles.chartAddSegmentRight}>
+                        <Text style={[styles.chartAddSegmentCount, { color: colors.textMuted, marginRight: 8 }]}>
+                          {segmentSymbolCounts[seg] ?? 0}
+                        </Text>
+                        <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+                      </View>
+                    </TouchableOpacity>
+                  ))
+                : instrumentsInChartSegment.length === 0 ? (
+                    <View style={styles.chartAddEmptyWrap}>
+                      <Text style={[styles.chartAddEmptyText, { color: colors.textMuted }]}>
+                        No symbols in this segment
+                      </Text>
+                    </View>
+                  ) : (
+                    instrumentsInChartSegment.map((inst) => {
+                      const onChart = chartTabs.some((t) => t.symbol === inst.symbol);
+                      return (
+                        <TouchableOpacity
+                          key={inst.symbol}
+                          style={[
+                            styles.symbolPickerItem,
+                            { borderBottomColor: colors.border },
+                            onChart && { backgroundColor: isDark ? `${colors.primary}18` : `${colors.primary}14` },
+                          ]}
+                          onPress={() => addNewChartTab(inst.symbol)}
+                        >
+                          <View>
+                            <Text style={[styles.symbolPickerSymbol, { color: colors.textPrimary }]}>{inst.symbol}</Text>
+                            <Text style={[styles.symbolPickerName, { color: colors.textMuted }]}>{inst.name}</Text>
+                          </View>
+                          {onChart ? <Ionicons name="checkmark" size={20} color={colors.primary} /> : null}
+                        </TouchableOpacity>
+                      );
+                    })
+                  )}
             </ScrollView>
           </View>
         </View>
@@ -4016,19 +4308,18 @@ const MoreTab = ({ navigation }) => {
   const menuItems = [
     { icon: 'book-outline', label: 'Orders', screen: 'OrderBook', isTab: false, color: colors.primary },
     { icon: 'wallet-outline', label: 'Wallet', screen: 'Wallet', isTab: false, color: colors.primary },
-    { icon: 'copy-outline', label: 'Copy Trade', screen: 'CopyTrade', isTab: false, color: colors.primary },
-    { icon: 'trophy-outline', label: 'Challenge Rules', screen: 'ChallengeRules', isTab: false, color: '#f59e0b' },
-    { icon: 'people-outline', label: 'IB Program', screen: 'IB', isTab: false, color: colors.primary },
+    { icon: 'people-circle-outline', label: 'Social', screen: 'Social', isTab: false, color: colors.primary },
+    { icon: 'briefcase-outline', label: 'Business', screen: 'Business', params: { initialTab: 'ib' }, isTab: false, color: colors.primary },
     { icon: 'person-outline', label: 'Profile', screen: 'Profile', isTab: false, color: colors.primary },
     { icon: 'help-circle-outline', label: 'Support', screen: 'Support', isTab: false, color: colors.primary },
     { icon: 'document-text-outline', label: 'Instructions', screen: 'Instructions', isTab: false, color: colors.primary },
   ];
 
-  const handleNavigate = (screen, isTab) => {
+  const handleNavigate = (screen, isTab, params) => {
     if (isTab) {
-      navigation.navigate(screen);
+      navigation.navigate(screen, params);
     } else if (parentNav) {
-      parentNav.navigate(screen);
+      parentNav.navigate(screen, params);
     }
   };
 
@@ -4042,7 +4333,7 @@ const MoreTab = ({ navigation }) => {
       {/* Menu Items */}
       <ScrollView style={styles.moreMenuList}>
         {menuItems.map((item, index) => (
-          <TouchableOpacity key={index} style={[styles.moreMenuItem, { borderBottomColor: colors.border }]} onPress={() => handleNavigate(item.screen, item.isTab)}>
+          <TouchableOpacity key={index} style={[styles.moreMenuItem, { borderBottomColor: colors.border }]} onPress={() => handleNavigate(item.screen, item.isTab, item.params)}>
             <View style={[styles.moreMenuIcon, { backgroundColor: `${item.color}20` }]}>
               <Ionicons name={item.icon} size={20} color={item.color} />
             </View>
@@ -4080,25 +4371,29 @@ const MoreTab = ({ navigation }) => {
 
 // Tab Navigator with theme support
 const ThemedTabNavigator = () => {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
   const ctx = React.useContext(TradingContext);
-  
-  // Calculate bottom padding for navigation bar
+
   const bottomPadding = Math.max(insets.bottom, 10);
-  
+  const tabActive = isDark ? '#50A5F1' : colors.primary;
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
-        tabBarStyle: { 
-          backgroundColor: colors.tabBarBg, 
-          borderTopColor: colors.border, 
-          height: 60 + bottomPadding, 
-          paddingBottom: bottomPadding 
+        tabBarStyle: {
+          backgroundColor: colors.tabBarBg,
+          borderTopColor: colors.border,
+          borderTopWidth: StyleSheet.hairlineWidth,
+          height: 58 + bottomPadding,
+          paddingBottom: bottomPadding,
+          paddingTop: 6,
+          elevation: 0,
         },
-        tabBarActiveTintColor: colors.primary,
+        tabBarActiveTintColor: tabActive,
         tabBarInactiveTintColor: colors.textMuted,
+        tabBarLabelStyle: { fontSize: 10, fontWeight: '600', marginBottom: 2 },
         tabBarIcon: ({ focused, color, size }) => {
           let iconName;
           if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
@@ -4109,12 +4404,11 @@ const ThemedTabNavigator = () => {
           return <Ionicons name={iconName} size={size} color={color} />;
         },
       })}
-      screenListeners={{
-        tabPress: (e) => {
-          // Track current tab for notifications
-          ctx.setCurrentMainTab(e.target.split('-')[0]);
+      screenListeners={({ route }) => ({
+        tabPress: () => {
+          ctx.setCurrentMainTab(route.name);
         },
-      }}
+      })}
     >
       <Tab.Screen name="Home" component={HomeTab} />
       <Tab.Screen name="Markets" component={QuotesTab} />
@@ -4136,13 +4430,10 @@ const MainTradingScreen = ({ navigation, route }) => {
   );
 };
 
-// Gold color constant
-const GOLD = '#dc2626';
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0a0a0a' },
-  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0a0a0a' },
-  tabBar: { backgroundColor: '#0a0a0a', borderTopColor: '#0a0a0a', height: 60, paddingBottom: 8 },
+  container: { flex: 1, backgroundColor: '#121212' },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#121212' },
+  tabBar: { backgroundColor: '#121212', borderTopColor: '#333333', height: 60, paddingBottom: 8 },
   
   // Banner Slider
   bannerContainer: { marginHorizontal: 16, marginBottom: 16, borderRadius: 12, overflow: 'hidden' },
@@ -4161,7 +4452,7 @@ const styles = StyleSheet.create({
   
   accountCard: { margin: 16, padding: 16, backgroundColor: '#141414', borderRadius: 16, borderWidth: 1, borderColor: '#1e1e1e' },
   accountCardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  accountIconContainer: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#dc262620', justifyContent: 'center', alignItems: 'center' },
+  accountIconContainer: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#2563EB20', justifyContent: 'center', alignItems: 'center' },
   accountInfo: { flex: 1, marginLeft: 12 },
   accountId: { color: '#fff', fontSize: 16, fontWeight: '600' },
   accountType: { color: '#666', fontSize: 12, marginTop: 2 },
@@ -4241,7 +4532,7 @@ const styles = StyleSheet.create({
   
   // Deposit/Withdraw Buttons
   actionButtons: { flexDirection: 'row', gap: 8, marginHorizontal: 16, marginTop: 12 },
-  depositBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, backgroundColor: '#dc2626', borderRadius: 12 },
+  depositBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, backgroundColor: '#2563EB', borderRadius: 12 },
   depositBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   withdrawBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, backgroundColor: '#0f0f0f', borderRadius: 12, borderWidth: 1, borderColor: '#2a2a2a' },
   withdrawBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
@@ -4268,7 +4559,7 @@ const styles = StyleSheet.create({
   },
   // Legacy styles (kept for compatibility)
   quickActionsRow: { flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
-  quickActionCard: { flex: 1, alignItems: 'center', paddingVertical: 16, backgroundColor: '#000000', borderRadius: 12, borderWidth: 1, borderColor: '#1a1a1a' },
+  quickActionCard: { flex: 1, alignItems: 'center', paddingVertical: 16, backgroundColor: '#1E1E1E', borderRadius: 12, borderWidth: 1, borderColor: '#333333' },
   quickActionIconBg: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
   quickActionLabel: { color: '#fff', fontSize: 11, fontWeight: '500' },
   
@@ -4276,7 +4567,7 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sectionTitle: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  seeAllText: { color: '#dc2626', fontSize: 13, fontWeight: '500' },
+  seeAllText: { color: '#2563EB', fontSize: 13, fontWeight: '500' },
   
   // Copy Trade Masters Section
   mastersSection: { marginHorizontal: 16, marginTop: 16 },
@@ -4289,18 +4580,18 @@ const styles = StyleSheet.create({
     marginLeft: 8, 
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#1a1a1a'
+    borderColor: '#333333'
   },
   masterCardHeader: { position: 'relative', marginBottom: 8 },
   masterAvatar: { 
     width: 48, 
     height: 48, 
     borderRadius: 24, 
-    backgroundColor: '#dc262630', 
+    backgroundColor: '#2563EB30', 
     justifyContent: 'center', 
     alignItems: 'center' 
   },
-  masterAvatarText: { color: '#dc2626', fontSize: 18, fontWeight: 'bold' },
+  masterAvatarText: { color: '#2563EB', fontSize: 18, fontWeight: 'bold' },
   followingBadgeSmall: { 
     position: 'absolute', 
     bottom: -2, 
@@ -4330,7 +4621,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8, 
     borderRadius: 8 
   },
-  marketTabActive: { backgroundColor: '#dc2626' },
+  marketTabActive: { backgroundColor: '#2563EB' },
   marketTabText: { color: '#888', fontSize: 12, fontWeight: '600' },
   marketTabTextActive: { color: '#fff' },
   marketList: {},
@@ -4340,7 +4631,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     paddingVertical: 12, 
     borderBottomWidth: 1, 
-    borderBottomColor: '#1a1a1a' 
+    borderBottomColor: '#333333' 
   },
   marketItemLeft: {},
   marketSymbol: { color: '#fff', fontSize: 14, fontWeight: '600' },
@@ -4375,6 +4666,163 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
   },
+
+  sparklineRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    height: 32,
+    gap: 2,
+    marginTop: 8,
+    alignSelf: 'stretch',
+  },
+  sparklineBar: { flex: 1, borderRadius: 1, opacity: 0.9 },
+
+  vantageHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  vantageHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  vantageHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  vantageLogoMark: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  vantageLogoLetter: { color: '#ffffff', fontSize: 18, fontWeight: '800' },
+  liveChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  liveChipText: { fontSize: 14, fontWeight: '600' },
+  headerIconBtn: { padding: 10 },
+
+  verifyStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    gap: 8,
+  },
+  verifyStripText: { flex: 1, fontSize: 13, fontWeight: '500' },
+  verifyStripCta: { color: '#fb923c', fontSize: 13, fontWeight: '700' },
+
+  heroBlock: { paddingHorizontal: 20, paddingBottom: 16 },
+  heroEquityLabel: { fontSize: 13, marginBottom: 4 },
+  heroEquityValue: { fontSize: 34, fontWeight: '800', letterSpacing: -0.5 },
+  heroHeadline: { fontSize: 17, fontWeight: '700', marginTop: 14, lineHeight: 22 },
+  heroSub: { fontSize: 14, marginTop: 6, lineHeight: 20 },
+  heroWelcome: { fontSize: 14, marginTop: 10 },
+  heroSetupBtn: {
+    marginTop: 16,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  heroSetupBtnText: { fontSize: 16, fontWeight: '700' },
+
+  vantageQuickRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  vantageQuickItem: { flex: 1, alignItems: 'center', maxWidth: '25%' },
+  vantageQuickIconBg: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  vantageQuickLabel: { fontSize: 11, fontWeight: '600', textAlign: 'center' },
+
+  copyTradingTitle: { fontSize: 17, fontWeight: '700' },
+  masterCardVantage: {
+    width: 148,
+    borderRadius: 14,
+    padding: 12,
+    marginLeft: 10,
+    borderWidth: 1,
+    alignItems: 'stretch',
+  },
+  masterCardTopRow: { position: 'relative', marginBottom: 8, alignSelf: 'stretch' },
+  masterNameVantage: { fontSize: 13, fontWeight: '600', marginBottom: 6 },
+  masterReturnPct: { fontSize: 20, fontWeight: '800' },
+  masterReturnLabel: { fontSize: 11, marginTop: 2 },
+
+  vantageMarketTabsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    paddingHorizontal: 4,
+    marginBottom: 14,
+    gap: 20,
+  },
+  vantageMarketTabHit: { paddingBottom: 8 },
+  vantageMarketTabText: { fontSize: 15 },
+  vantageMarketTabUnderline: { height: 3, borderRadius: 2, marginTop: 6 },
+
+  marketGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  marketGridCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 4,
+  },
+  gridSymbol: { fontSize: 15, fontWeight: '700' },
+  gridName: { fontSize: 11, marginTop: 2 },
+  gridBottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  gridCategory: { fontSize: 11, fontWeight: '500', flex: 1 },
+  gridPrice: { fontSize: 16, fontWeight: '700', marginTop: 8 },
+  gridChangePill: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  addWatchlistPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 18,
+    marginBottom: 8,
+    paddingVertical: 12,
+    borderRadius: 24,
+    borderWidth: 1,
+    alignSelf: 'center',
+    paddingHorizontal: 22,
+  },
+  addWatchlistPillText: { fontSize: 15, fontWeight: '600' },
   
   // Master Detail Modal
   masterDetailModal: { 
@@ -4393,12 +4841,12 @@ const styles = StyleSheet.create({
     width: 80, 
     height: 80, 
     borderRadius: 40, 
-    backgroundColor: '#dc262630', 
+    backgroundColor: '#2563EB30', 
     justifyContent: 'center', 
     alignItems: 'center',
     marginBottom: 12
   },
-  masterProfileAvatarText: { color: '#dc2626', fontSize: 32, fontWeight: 'bold' },
+  masterProfileAvatarText: { color: '#2563EB', fontSize: 32, fontWeight: 'bold' },
   masterProfileName: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
   masterProfileBio: { color: '#888', fontSize: 13, textAlign: 'center', marginTop: 8, paddingHorizontal: 20 },
   followingBadgeLarge: { 
@@ -4416,7 +4864,7 @@ const styles = StyleSheet.create({
   masterStatBox: { 
     flex: 1, 
     minWidth: '45%', 
-    backgroundColor: '#0a0a0a', 
+    backgroundColor: '#121212', 
     borderRadius: 12, 
     padding: 14, 
     alignItems: 'center' 
@@ -4428,7 +4876,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     justifyContent: 'center', 
     gap: 8, 
-    backgroundColor: '#dc2626', 
+    backgroundColor: '#2563EB', 
     paddingVertical: 14, 
     borderRadius: 12 
   },
@@ -4451,7 +4899,7 @@ const styles = StyleSheet.create({
     marginTop: 16, 
     paddingVertical: 12 
   },
-  viewFullProfileText: { color: '#dc2626', fontSize: 14, fontWeight: '600' },
+  viewFullProfileText: { color: '#2563EB', fontSize: 14, fontWeight: '600' },
   
   // MarketWatch News Section
   marketWatchSection: { marginHorizontal: 16, marginTop: 16 },
@@ -4466,15 +4914,15 @@ const styles = StyleSheet.create({
   newsCard: { width: 280, backgroundColor: '#111', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#222' },
   newsCardVertical: { flexDirection: 'row', backgroundColor: '#111', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#222', marginBottom: 12 },
   newsCardFull: { width: '100%', backgroundColor: '#111', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#222' },
-  newsCardImage: { width: '100%', height: 180, backgroundColor: '#1a1a1a' },
-  newsCardImageVertical: { width: 140, height: 140, backgroundColor: '#1a1a1a' },
-  newsCardImageFull: { width: '100%', height: 200, backgroundColor: '#1a1a1a' },
+  newsCardImage: { width: '100%', height: 180, backgroundColor: '#333333' },
+  newsCardImageVertical: { width: 140, height: 140, backgroundColor: '#333333' },
+  newsCardImageFull: { width: '100%', height: 200, backgroundColor: '#333333' },
   newsCardContent: { padding: 14 },
   newsCardContentVertical: { flex: 1, padding: 14, justifyContent: 'space-between' },
   newsCardContentFull: { padding: 14 },
   newsCardMeta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  newsCategoryBadge: { backgroundColor: '#dc262620', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
-  newsCategoryText: { color: '#dc2626', fontSize: 11, fontWeight: '600' },
+  newsCategoryBadge: { backgroundColor: '#2563EB20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
+  newsCategoryText: { color: '#2563EB', fontSize: 11, fontWeight: '600' },
   newsTime: { color: '#666', fontSize: 11 },
   newsCardTitle: { color: '#fff', fontSize: 14, fontWeight: '600', lineHeight: 20, marginBottom: 6 },
   newsCardDesc: { color: '#888', fontSize: 12, lineHeight: 17, marginBottom: 10 },
@@ -4492,47 +4940,47 @@ const styles = StyleSheet.create({
   newsSourceText: { color: '#888', fontSize: 12 },
   
   // Positions Card
-  positionsCard: { margin: 16, padding: 16, backgroundColor: '#000000', borderRadius: 16, borderWidth: 1, borderColor: '#1a1a1a' },
+  positionsCard: { margin: 16, padding: 16, backgroundColor: '#1E1E1E', borderRadius: 16, borderWidth: 1, borderColor: '#333333' },
   positionsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   positionsTitle: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  positionsCount: { color: '#dc2626', fontSize: 14 },
+  positionsCount: { color: '#2563EB', fontSize: 14 },
   noPositionsText: { color: '#666', fontSize: 14, textAlign: 'center', paddingVertical: 16 },
-  positionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 12, backgroundColor: '#000000', borderRadius: 12, marginBottom: 8 },
+  positionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 12, backgroundColor: '#1E1E1E', borderRadius: 12, marginBottom: 8 },
   positionSide: { fontSize: 12, marginTop: 2 },
   positionPnlValue: { fontSize: 16, fontWeight: '600' },
-  viewAllText: { color: '#dc2626', fontSize: 14, textAlign: 'center', paddingTop: 8 },
+  viewAllText: { color: '#2563EB', fontSize: 14, textAlign: 'center', paddingTop: 8 },
   
   // News Section (Home Tab)
   newsSection: { margin: 16, marginTop: 8 },
   newsSectionTitle: { color: '#fff', fontSize: 18, fontWeight: '600', marginBottom: 12 },
-  newsTabs: { flexDirection: 'row', backgroundColor: '#000000', borderRadius: 12, padding: 4, marginBottom: 12, borderWidth: 1, borderColor: '#1a1a1a' },
+  newsTabs: { flexDirection: 'row', backgroundColor: '#1E1E1E', borderRadius: 12, padding: 4, marginBottom: 12, borderWidth: 1, borderColor: '#333333' },
   newsTab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: 10 },
-  newsTabActive: { backgroundColor: '#000000' },
+  newsTabActive: { backgroundColor: '#1E1E1E' },
   newsTabText: { color: '#666', fontSize: 12, fontWeight: '500' },
-  newsTabTextActive: { color: '#dc2626' },
+  newsTabTextActive: { color: '#2563EB' },
   newsContent: {},
-  newsItem: { backgroundColor: '#000000', borderRadius: 12, padding: 16, marginBottom: 10, borderWidth: 1, borderColor: '#1a1a1a' },
-  newsCategory: { backgroundColor: '#dc262620', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, alignSelf: 'flex-start', marginBottom: 8 },
-  newsCategoryText: { color: '#dc2626', fontSize: 11, fontWeight: '600' },
+  newsItem: { backgroundColor: '#1E1E1E', borderRadius: 12, padding: 16, marginBottom: 10, borderWidth: 1, borderColor: '#333333' },
+  newsCategory: { backgroundColor: '#2563EB20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, alignSelf: 'flex-start', marginBottom: 8 },
+  newsCategoryText: { color: '#2563EB', fontSize: 11, fontWeight: '600' },
   newsTitle: { color: '#fff', fontSize: 14, fontWeight: '500', lineHeight: 20, marginBottom: 8 },
   newsMeta: { flexDirection: 'row', justifyContent: 'space-between' },
   newsSource: { color: '#888', fontSize: 12 },
   newsTime: { color: '#666', fontSize: 12 },
-  calendarContent: { backgroundColor: '#000000', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#1a1a1a' },
-  calendarHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#000000', borderBottomWidth: 1, borderBottomColor: '#000000' },
+  calendarContent: { backgroundColor: '#1E1E1E', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#333333' },
+  calendarHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#1E1E1E', borderBottomWidth: 1, borderBottomColor: '#333333' },
   calendarHeaderText: { color: '#666', fontSize: 11, fontWeight: '600', width: 50, textAlign: 'center' },
-  calendarRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#000000' },
+  calendarRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#333333' },
   calendarTime: { color: '#fff', fontSize: 12, fontWeight: '500', width: 50, textAlign: 'center' },
-  currencyBadge: { backgroundColor: '#dc262620', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, width: 50, alignItems: 'center' },
-  currencyText: { color: '#dc2626', fontSize: 11, fontWeight: '600' },
+  currencyBadge: { backgroundColor: '#2563EB20', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, width: 50, alignItems: 'center' },
+  currencyText: { color: '#2563EB', fontSize: 11, fontWeight: '600' },
   eventName: { color: '#fff', fontSize: 13, fontWeight: '500' },
   eventForecast: { color: '#666', fontSize: 10, marginTop: 2 },
   impactDot: { width: 10, height: 10, borderRadius: 5 },
   
   // TradingView Widget Container
-  tradingViewContainer: { height: 700, backgroundColor: '#000000', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#1a1a1a' },
-  tradingViewWebView: { flex: 1, backgroundColor: '#000000' },
-  webViewLoading: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000000' },
+  tradingViewContainer: { height: 700, backgroundColor: '#1E1E1E', borderRadius: 16, overflow: 'hidden', borderWidth: 1, borderColor: '#333333' },
+  tradingViewWebView: { flex: 1, backgroundColor: '#1E1E1E' },
+  webViewLoading: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1E1E1E' },
   webViewLoadingText: { color: '#666', fontSize: 12, marginTop: 8 },
   
   section: { padding: 16 },
@@ -4540,7 +4988,7 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', padding: 40 },
   emptyText: { color: '#666', marginTop: 12 },
   
-  tradeItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, backgroundColor: '#000000', borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#1a1a1a' },
+  tradeItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, backgroundColor: '#1E1E1E', borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#333333' },
   tradeLeft: {},
   tradeSymbol: { color: '#fff', fontSize: 16, fontWeight: '600' },
   tradeSide: { fontSize: 12, marginTop: 4 },
@@ -4555,11 +5003,11 @@ const styles = StyleSheet.create({
     marginBottom: 10, 
     paddingHorizontal: 12, 
     paddingVertical: 10, 
-    backgroundColor: '#000000', 
+    backgroundColor: '#1E1E1E', 
     borderRadius: 10,
     minHeight: 44,
     borderWidth: 1,
-    borderColor: '#1a1a1a',
+    borderColor: '#333333',
   },
   searchInput: { flex: 1, marginLeft: 8, color: '#fff', fontSize: 14, paddingVertical: 0 },
   
@@ -4572,16 +5020,16 @@ const styles = StyleSheet.create({
     marginBottom: 12, 
     paddingHorizontal: 14, 
     paddingVertical: 12, 
-    backgroundColor: '#000000', 
+    backgroundColor: '#1E1E1E', 
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#1a1a1a',
+    borderColor: '#333333',
   },
   marketTabsContainer: {
     flexDirection: 'row',
     marginHorizontal: 12,
     marginBottom: 12,
-    backgroundColor: '#000000',
+    backgroundColor: '#1E1E1E',
     borderRadius: 12,
     padding: 4,
   },
@@ -4600,7 +5048,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   marketTabTextActive: {
-    color: '#000',
+    color: '#ffffff',
   },
   marketContent: {
     flex: 1,
@@ -4629,7 +5077,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#1a1a1a',
+    borderColor: '#333333',
   },
   segmentHeader: {
     flexDirection: 'row',
@@ -4648,7 +5096,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   segmentCount: {
-    backgroundColor: '#000000',
+    backgroundColor: '#1E1E1E',
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 10,
@@ -4666,14 +5114,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8, 
     marginRight: 6, 
     borderRadius: 16, 
-    backgroundColor: '#000000',
+    backgroundColor: '#1E1E1E',
     height: 34,
     justifyContent: 'center',
     minWidth: 50,
     borderWidth: 1,
-    borderColor: '#1a1a1a',
+    borderColor: '#333333',
   },
-  categoryBtnActive: { backgroundColor: '#dc2626' },
+  categoryBtnActive: { backgroundColor: '#2563EB' },
   categoryText: { color: '#666', fontSize: 12, fontWeight: '500' },
   categoryTextActive: { color: '#000', fontWeight: '600' },
   
@@ -4683,18 +5131,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12, 
     paddingVertical: 12, 
     borderBottomWidth: 1,
-    borderBottomColor: '#000000',
+    borderBottomColor: '#333333',
   },
   starBtn: { width: 28, height: 28, justifyContent: 'center', alignItems: 'center' },
   instrumentInfo: { flex: 1, marginLeft: 8 },
   instrumentSymbol: { color: '#fff', fontSize: 14, fontWeight: '600' },
   instrumentName: { color: '#666', fontSize: 10, marginTop: 2 },
   instrumentPriceCol: { width: 60, alignItems: 'center' },
-  bidPrice: { color: '#dc2626', fontSize: 13, fontWeight: '500' },
+  bidPrice: { color: '#2563EB', fontSize: 13, fontWeight: '500' },
   askPrice: { color: '#ef4444', fontSize: 13, fontWeight: '500' },
   priceLabel: { color: '#666', fontSize: 9, marginTop: 1 },
   spreadBadgeCol: { paddingHorizontal: 6, paddingVertical: 4, borderRadius: 4, marginHorizontal: 4, minWidth: 32, alignItems: 'center', borderWidth: 1 },
-  spreadBadgeText: { color: '#dc2626', fontSize: 11, fontWeight: '600' },
+  spreadBadgeText: { color: '#2563EB', fontSize: 11, fontWeight: '600' },
   chartIconBtn: { 
     width: 32, 
     height: 32, 
@@ -4705,16 +5153,16 @@ const styles = StyleSheet.create({
   },
   
   // Chart Trading Panel - One Click Buy/Sell
-  chartTradingPanel: { backgroundColor: '#000000', paddingHorizontal: 12, paddingVertical: 10, paddingBottom: 16 },
+  chartTradingPanel: { backgroundColor: '#1E1E1E', paddingHorizontal: 12, paddingVertical: 10, paddingBottom: 16 },
   chartVolRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
-  chartVolMinusBtn: { width: 36, height: 36, backgroundColor: '#000000', borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
-  chartVolPlusBtn: { width: 36, height: 36, backgroundColor: '#000000', borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
+  chartVolMinusBtn: { width: 36, height: 36, backgroundColor: '#1E1E1E', borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
+  chartVolPlusBtn: { width: 36, height: 36, backgroundColor: '#1E1E1E', borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
   chartVolDisplay: { alignItems: 'center', marginHorizontal: 16, minWidth: 80 },
   chartVolLabel: { color: '#666', fontSize: 10 },
   chartVolValue: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   chartTradeButtons: { flexDirection: 'row', gap: 10 },
-  chartSellButton: { flex: 1, backgroundColor: '#dc2626', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
-  chartBuyButton: { flex: 1, backgroundColor: '#dc2626', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  chartSellButton: { flex: 1, backgroundColor: '#ef4444', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  chartBuyButton: { flex: 1, backgroundColor: '#22c55e', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
   chartSellLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: '600' },
   chartBuyLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: '600' },
   chartSellPrice: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
@@ -4725,15 +5173,15 @@ const styles = StyleSheet.create({
   orderModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
   orderPanelBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   orderPanelScroll: { maxHeight: height * 0.85 },
-  orderPanelContainer: { backgroundColor: '#000000', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingBottom: 40, paddingTop: 8 },
-  orderPanelHandle: { width: 40, height: 4, backgroundColor: '#000000', borderRadius: 2, alignSelf: 'center', marginTop: 8, marginBottom: 12 },
+  orderPanelContainer: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingBottom: 40, paddingTop: 8 },
+  orderPanelHandle: { width: 40, height: 4, backgroundColor: '#1E1E1E', borderRadius: 2, alignSelf: 'center', marginTop: 8, marginBottom: 12 },
   orderPanelHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   orderPanelSymbol: { color: '#fff', fontSize: 16, fontWeight: '600' },
   orderPanelName: { color: '#666', fontSize: 12, marginTop: 2 },
   orderCloseBtn: { padding: 6 },
-  leverageRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#000000', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 10 },
+  leverageRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 10 },
   leverageLabel: { color: '#888', fontSize: 12 },
-  leverageValue: { color: '#dc2626', fontSize: 14, fontWeight: 'bold' },
+  leverageValue: { color: '#2563EB', fontSize: 14, fontWeight: 'bold' },
   quickTradeRow: { flexDirection: 'row', gap: 8, marginBottom: 6 },
   quickSellBtn: { flex: 1, backgroundColor: '#ef4444', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
   quickBuyBtn: { flex: 1, backgroundColor: '#22c55e', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
@@ -4746,54 +5194,98 @@ const styles = StyleSheet.create({
   slMandatoryText: { color: '#f59e0b', fontSize: 12, flex: 1 },
   orderTypeRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   orderTypeBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
-  orderTypeBtnActive: { backgroundColor: '#dc2626' },
+  orderTypeBtnActive: { backgroundColor: '#2563EB' },
   orderTypeBtnText: { fontSize: 13, fontWeight: '600' },
   orderTypeBtnTextActive: { color: '#fff' },
   pendingTypeRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   pendingTypeBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1 },
-  pendingTypeBtnActive: { borderColor: '#dc2626' },
+  pendingTypeBtnActive: { borderColor: '#2563EB' },
   pendingTypeText: { color: '#666', fontSize: 12 },
-  pendingTypeTextActive: { color: '#dc2626' },
+  pendingTypeTextActive: { color: '#2563EB' },
   inputSection: { marginBottom: 10 },
   inputLabel: { color: '#888', fontSize: 11, marginBottom: 4 },
-  priceInput: { backgroundColor: '#000000', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, color: '#fff', fontSize: 15 },
+  priceInput: { backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, color: '#fff', fontSize: 15 },
   volumeControlRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  volumeControlBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center', backgroundColor: '#dc2626', borderRadius: 8 },
-  volumeInputField: { flex: 1, backgroundColor: '#000000', borderRadius: 8, paddingVertical: 10, textAlign: 'center', color: '#fff', fontSize: 15 },
+  volumeControlBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center', backgroundColor: '#2563EB', borderRadius: 8 },
+  volumeInputField: { flex: 1, backgroundColor: '#1E1E1E', borderRadius: 8, paddingVertical: 10, textAlign: 'center', color: '#fff', fontSize: 15 },
   slTpRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
   slTpCol: { flex: 1 },
-  slTpInputOrder: { backgroundColor: '#000000', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, color: '#fff', fontSize: 14 },
+  slTpInputOrder: { backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, color: '#fff', fontSize: 14 },
   finalTradeRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
   finalSellBtn: { flex: 1, backgroundColor: '#ef4444', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   finalBuyBtn: { flex: 1, backgroundColor: '#22c55e', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   finalBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
-  spreadBadge: { backgroundColor: '#000000', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginHorizontal: 8, borderWidth: 1, borderColor: '#1a1a1a' },
-  spreadText: { color: '#dc2626', fontSize: 10 },
+  spreadBadge: { backgroundColor: '#1E1E1E', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginHorizontal: 8, borderWidth: 1, borderColor: '#333333' },
+  spreadText: { color: '#2563EB', fontSize: 10 },
   
   // Trade
-  priceBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, backgroundColor: '#000000' },
+  priceBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, backgroundColor: '#1E1E1E' },
   currentSymbol: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   currentName: { color: '#666', fontSize: 12 },
   priceDisplay: { flexDirection: 'row', gap: 16 },
-  bidPriceMain: { color: '#dc2626', fontSize: 16, fontWeight: '600' },
+  bidPriceMain: { color: '#2563EB', fontSize: 16, fontWeight: '600' },
   askPriceMain: { color: '#ef4444', fontSize: 16, fontWeight: '600' },
   
-  // Account Summary (Trade Tab)
-  accountSummaryList: { backgroundColor: '#000000', borderBottomWidth: 1, borderBottomColor: '#000000', paddingTop: 50 },
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#000000' },
+  // Trade tab — dashboard (web-style)
+  tradeDashRoot: { flex: 1 },
+  tradeSummaryStrip: { flexGrow: 0 },
+  tradeSummaryStripContent: { flexDirection: 'row', alignItems: 'stretch', gap: 10, paddingHorizontal: 12 },
+  tradeStatPill: { minWidth: 108, maxWidth: 140, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth },
+  tradeStatLabel: { fontSize: 11, fontWeight: '600', marginBottom: 4 },
+  tradeStatValue: { fontSize: 15, fontWeight: '700' },
+  tradeDashCard: {
+    flex: 1,
+    marginHorizontal: 12,
+    marginTop: 4,
+    marginBottom: 12,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  tradeDashTabsRow: { flexDirection: 'row', borderBottomWidth: StyleSheet.hairlineWidth },
+  tradeDashTabHit: { flex: 1, alignItems: 'center', paddingTop: 12, paddingBottom: 4 },
+  tradeDashTabLabel: { fontSize: 14 },
+  tradeDashTabUnderline: { height: 3, width: '72%', borderRadius: 2, marginTop: 8 },
+  tradeDashTabUnderlinePlaceholder: { height: 3, marginTop: 8, opacity: 0 },
+  tradeToolbarRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
+  tradeToolOutlineBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth },
+  tradeToolBtnLabel: { fontSize: 13, fontWeight: '600' },
+  tradeHScroll: { flexGrow: 0 },
+  tradeTableHeaderRow: { flexDirection: 'row', alignItems: 'center', minHeight: 38, borderBottomWidth: StyleSheet.hairlineWidth },
+  tradeThCell: { paddingHorizontal: 6, justifyContent: 'center', paddingVertical: 8 },
+  tradeThText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
+  tradeTableRow: { borderBottomWidth: StyleSheet.hairlineWidth, paddingVertical: 8, paddingHorizontal: 4 },
+  tradeTableRowInner: { flexDirection: 'row', alignItems: 'center' },
+  tradeTableRowTouch: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  tradeTdCell: { paddingHorizontal: 6, justifyContent: 'center', paddingVertical: 4 },
+  tradeTdText: { fontSize: 12 },
+  tradeTdBold: { fontWeight: '700' },
+  tradeActCell: { flexDirection: 'row', alignItems: 'center', gap: 10, justifyContent: 'flex-end', paddingRight: 6 },
+  tradeRowPnlHint: { fontSize: 11, fontWeight: '600', marginTop: 4, marginLeft: 6 },
+  tradeEmptyWrap: { justifyContent: 'center', alignItems: 'center', paddingVertical: 48 },
+  tradeEmptyTitle: { fontSize: 15, fontWeight: '500' },
+
+  // Account Summary (Trade Tab) — legacy rows (other screens may reference)
+  accountSummaryList: { backgroundColor: '#1E1E1E', borderBottomWidth: 1, borderBottomColor: '#333333', paddingTop: 50 },
+  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#333333' },
   summaryLabel: { color: '#666', fontSize: 14 },
   summaryValue: { color: '#fff', fontSize: 14 },
-  pendingStatus: { color: '#dc2626', fontSize: 12, fontWeight: '600' },
+  pendingStatus: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
   historySide: { fontSize: 12, marginLeft: 8 },
   
-  tradeTabs: { flexDirection: 'row', backgroundColor: '#000000', borderBottomWidth: 1, borderBottomColor: '#000000' },
+  tradeTabs: { flexDirection: 'row', backgroundColor: '#1E1E1E', borderBottomWidth: 1, borderBottomColor: '#333333' },
   tradeTabBtn: { flex: 1, paddingVertical: 12, alignItems: 'center' },
-  tradeTabBtnActive: { borderBottomWidth: 2, borderBottomColor: '#dc2626' },
+  tradeTabBtnActive: { borderBottomWidth: 2, borderBottomColor: '#2563EB' },
   tradeTabText: { color: '#666', fontSize: 14 },
-  tradeTabTextActive: { color: '#dc2626', fontWeight: '600' },
+  tradeTabTextActive: { color: '#2563EB', fontWeight: '600' },
   
   tradesList: { flex: 1 },
-  positionItem: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#000000' },
+  positionItem: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#333333' },
   positionRow: { flexDirection: 'row', alignItems: 'center' },
   positionInfo: { flex: 1 },
   positionSymbolRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -4803,118 +5295,118 @@ const styles = StyleSheet.create({
   positionDetail: { color: '#666', fontSize: 12, marginTop: 4 },
   slTpText: { color: '#888', fontSize: 11, marginTop: 2 },
   positionActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 8 },
-  editBtn: { padding: 10, backgroundColor: '#dc262620', borderRadius: 10 },
-  closeTradeBtn: { padding: 10, backgroundColor: '#dc262620', borderRadius: 10 },
+  editBtn: { padding: 10, backgroundColor: '#2563EB20', borderRadius: 10 },
+  closeTradeBtn: { padding: 10, backgroundColor: '#2563EB20', borderRadius: 10 },
   positionPnlCol: { alignItems: 'flex-end' },
   positionPnl: { fontSize: 15, fontWeight: '600' },
   currentPriceText: { color: '#666', fontSize: 12, marginTop: 2 },
-  closeBtn: { backgroundColor: '#dc262620', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 6 },
-  closeBtnText: { color: '#dc2626', fontSize: 12, fontWeight: '600' },
+  closeBtn: { backgroundColor: '#2563EB20', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 6 },
+  closeBtnText: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
   
   // SL/TP Modal
   slTpModalOverlay: { flex: 1, justifyContent: 'flex-end' },
   slTpModalBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)' },
-  slTpModalContent: { backgroundColor: '#000000', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 40 },
-  slTpModalHandle: { width: 40, height: 4, backgroundColor: '#000000', borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
+  slTpModalContent: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 40 },
+  slTpModalHandle: { width: 40, height: 4, backgroundColor: '#1E1E1E', borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
   slTpModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
   slTpModalTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   slTpInputGroup: { marginBottom: 16 },
   slTpLabel: { color: '#888', fontSize: 13, marginBottom: 8 },
-  slTpInput: { backgroundColor: '#000000', borderRadius: 12, padding: 16, color: '#fff', fontSize: 16, borderWidth: 1, borderColor: '#1a1a1a' },
+  slTpInput: { backgroundColor: '#1E1E1E', borderRadius: 12, padding: 16, color: '#fff', fontSize: 16, borderWidth: 1, borderColor: '#333333' },
   slTpCurrentInfo: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16, paddingHorizontal: 4 },
   slTpCurrentText: { color: '#888', fontSize: 13 },
   slTpButtonRow: { flexDirection: 'row', gap: 12, marginTop: 8 },
-  slTpClearBtn: { flex: 1, backgroundColor: '#000000', padding: 16, borderRadius: 12, alignItems: 'center' },
+  slTpClearBtn: { flex: 1, backgroundColor: '#1E1E1E', padding: 16, borderRadius: 12, alignItems: 'center' },
   slTpClearBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  slTpSaveBtn: { flex: 2, backgroundColor: '#dc2626', padding: 16, borderRadius: 12, alignItems: 'center' },
+  slTpSaveBtn: { flex: 2, backgroundColor: '#2563EB', padding: 16, borderRadius: 12, alignItems: 'center' },
   slTpSaveBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   
   // Trade Details Modal - colors applied inline with theme
   tradeDetailsContent: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 40, maxHeight: '85%' },
   tradeDetailsScroll: { maxHeight: 500 },
   detailSection: { borderRadius: 12, padding: 16, marginBottom: 12 },
-  detailSectionTitle: { color: '#dc2626', fontSize: 14, fontWeight: 'bold', marginBottom: 12 },
-  detailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#000000' },
+  detailSectionTitle: { color: '#2563EB', fontSize: 14, fontWeight: 'bold', marginBottom: 12 },
+  detailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#333333' },
   detailLabel: { color: '#888', fontSize: 14 },
   detailValue: { color: '#fff', fontSize: 14, fontWeight: '500' },
   detailActions: { flexDirection: 'row', gap: 12, marginTop: 8, marginBottom: 20 },
-  detailEditBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#dc262620', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#dc2626' },
-  detailEditText: { color: '#dc2626', fontSize: 15, fontWeight: '600' },
-  detailCloseBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#dc2626', padding: 14, borderRadius: 12 },
+  detailEditBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#2563EB20', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#2563EB' },
+  detailEditText: { color: '#2563EB', fontSize: 15, fontWeight: '600' },
+  detailCloseBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#2563EB', padding: 14, borderRadius: 12 },
   detailCloseText: { color: '#fff', fontSize: 15, fontWeight: '600' },
   
   // iOS-style Confirmation Modal
   confirmModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 40 },
-  confirmModalContent: { backgroundColor: '#000000', borderRadius: 20, padding: 24, width: '100%', alignItems: 'center' },
-  confirmModalIcon: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#dc262620', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  confirmModalContent: { backgroundColor: '#1E1E1E', borderRadius: 20, padding: 24, width: '100%', alignItems: 'center' },
+  confirmModalIcon: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#2563EB20', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
   confirmModalTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 8 },
   confirmModalMessage: { color: '#888', fontSize: 15, textAlign: 'center', marginBottom: 24 },
   confirmModalButtons: { flexDirection: 'row', gap: 12, width: '100%' },
-  confirmCancelBtn: { flex: 1, backgroundColor: '#000000', padding: 14, borderRadius: 12, alignItems: 'center' },
+  confirmCancelBtn: { flex: 1, backgroundColor: '#1E1E1E', padding: 14, borderRadius: 12, alignItems: 'center' },
   confirmCancelText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  confirmCloseBtn: { flex: 1, backgroundColor: '#dc2626', padding: 14, borderRadius: 12, alignItems: 'center' },
+  confirmCloseBtn: { flex: 1, backgroundColor: '#2563EB', padding: 14, borderRadius: 12, alignItems: 'center' },
   confirmCloseText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   
   // Close All Buttons - background applied inline with theme
   closeAllRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 8 },
-  closeAllBtn: { flex: 1, backgroundColor: '#dc262620', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#dc2626' },
-  closeAllText: { color: '#dc2626', fontSize: 12, fontWeight: '600' },
-  closeProfitBtn: { flex: 1, backgroundColor: '#dc262620', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#dc2626' },
-  closeProfitText: { color: '#dc2626', fontSize: 12, fontWeight: '600' },
-  closeLossBtn: { flex: 1, backgroundColor: '#dc262620', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#dc2626' },
-  closeLossText: { color: '#dc2626', fontSize: 12, fontWeight: '600' },
+  closeAllBtn: { flex: 1, backgroundColor: '#2563EB20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#2563EB' },
+  closeAllText: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
+  closeProfitBtn: { flex: 1, backgroundColor: '#2563EB20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#2563EB' },
+  closeProfitText: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
+  closeLossBtn: { flex: 1, backgroundColor: '#2563EB20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#2563EB' },
+  closeLossText: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
   
   // Cancel Order Button
-  cancelOrderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#dc262620', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#dc2626' },
-  cancelOrderText: { color: '#dc2626', fontSize: 12, fontWeight: '600' },
+  cancelOrderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#2563EB20', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#2563EB' },
+  cancelOrderText: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
   
   // Swipe to Close
-  swipeCloseBtn: { backgroundColor: '#dc2626', justifyContent: 'center', alignItems: 'center', width: 80, height: '100%' },
+  swipeCloseBtn: { backgroundColor: '#2563EB', justifyContent: 'center', alignItems: 'center', width: 80, height: '100%' },
   swipeCloseText: { color: '#fff', fontSize: 12, fontWeight: '600', marginTop: 4 },
   
-  tradeButton: { margin: 16, padding: 16, backgroundColor: '#dc2626', borderRadius: 12, alignItems: 'center' },
+  tradeButton: { margin: 16, padding: 16, backgroundColor: '#2563EB', borderRadius: 12, alignItems: 'center' },
   tradeButtonText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   
   // Order Panel
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
-  orderPanel: { backgroundColor: '#000000', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20 },
+  orderPanel: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20 },
   orderPanelHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   orderPanelTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   
   sideToggle: { flexDirection: 'row', gap: 12, marginBottom: 20 },
-  sideBtn: { flex: 1, padding: 16, borderRadius: 12, backgroundColor: '#000000', alignItems: 'center' },
-  sideBtnSell: { backgroundColor: '#dc2626' },
-  sideBtnBuy: { backgroundColor: '#dc2626' },
+  sideBtn: { flex: 1, padding: 16, borderRadius: 12, backgroundColor: '#1E1E1E', alignItems: 'center' },
+  sideBtnSell: { backgroundColor: '#ef4444' },
+  sideBtnBuy: { backgroundColor: '#22c55e' },
   sideBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   sideBtnPrice: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginTop: 4 },
   
   inputGroup: { marginBottom: 16 },
   inputLabel: { color: '#666', fontSize: 12, marginBottom: 8 },
-  volumeInput: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#000000', borderRadius: 12 },
+  volumeInput: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1E1E1E', borderRadius: 12 },
   volumeBtn: { padding: 16 },
   volumeValue: { flex: 1, textAlign: 'center', color: '#fff', fontSize: 18, fontWeight: '600' },
   
   slTpRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
   slTpInputWrapper: { flex: 1 },
-  input: { backgroundColor: '#000000', borderRadius: 12, padding: 14, color: '#fff', fontSize: 16 },
+  input: { backgroundColor: '#1E1E1E', borderRadius: 12, padding: 14, color: '#fff', fontSize: 16 },
   
   executeBtn: { padding: 16, borderRadius: 12, alignItems: 'center' },
   executeBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
   
   // History
-  historyItemFull: { padding: 16, borderBottomWidth: 1, borderBottomColor: '#000000' },
+  historyItemFull: { padding: 16, borderBottomWidth: 1, borderBottomColor: '#333333' },
   historyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   historyLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   historySymbol: { color: '#fff', fontSize: 16, fontWeight: '600' },
   historyPnl: { fontSize: 16, fontWeight: '600' },
   historyMeta: { flexDirection: 'row', gap: 16, marginTop: 8 },
   historyMetaText: { color: '#666', fontSize: 12 },
-  historyDate: { color: '#000000', fontSize: 11, marginTop: 8 },
-  historyItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#000000' },
+  historyDate: { color: '#64748b', fontSize: 11, marginTop: 8 },
+  historyItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#333333' },
   historyDetails: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
   historyDetail: { color: '#666', fontSize: 12 },
-  adminBadge: { backgroundColor: '#dc262620', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
-  adminBadgeText: { color: '#dc2626', fontSize: 10 },
+  adminBadge: { backgroundColor: '#2563EB20', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
+  adminBadgeText: { color: '#2563EB', fontSize: 10 },
   
   // History Filters
   historyFilters: { paddingVertical: 8, borderBottomWidth: 1 },
@@ -4928,37 +5420,37 @@ const styles = StyleSheet.create({
   moreMenuHeader: { paddingTop: 60, paddingHorizontal: 20, paddingBottom: 20 },
   moreMenuTitle: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
   moreMenuList: { flex: 1, paddingHorizontal: 16 },
-  moreMenuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#000000' },
+  moreMenuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#333333' },
   moreMenuIcon: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginRight: 16 },
   moreMenuItemText: { flex: 1, color: '#fff', fontSize: 16 },
-  themeToggleItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#000000' },
-  themeToggle: { width: 50, height: 28, backgroundColor: '#000000', borderRadius: 14, justifyContent: 'center', paddingHorizontal: 2 },
-  themeToggleActive: { backgroundColor: '#dc2626' },
+  themeToggleItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#333333' },
+  themeToggle: { width: 50, height: 28, backgroundColor: '#1E1E1E', borderRadius: 14, justifyContent: 'center', paddingHorizontal: 2 },
+  themeToggleActive: { backgroundColor: '#2563EB' },
   themeToggleThumb: { width: 24, height: 24, backgroundColor: '#fff', borderRadius: 12 },
   themeToggleThumbActive: { marginLeft: 'auto' },
   
   // Chart Tab - Full screen with multiple tabs
-  chartContainer: { flex: 1, backgroundColor: '#000000' },
-  chartTabsBar: { flexDirection: 'row', alignItems: 'center', paddingTop: 50, paddingLeft: 8, backgroundColor: '#000000', borderBottomWidth: 1, borderBottomColor: '#000000' },
+  chartContainer: { flex: 1, backgroundColor: '#1E1E1E' },
+  chartTabsBar: { flexDirection: 'row', alignItems: 'center', paddingTop: 50, paddingLeft: 8, backgroundColor: '#1E1E1E', borderBottomWidth: 1, borderBottomColor: '#333333' },
   chartTabsScroll: { flexGrow: 0 },
   chartTab: { paddingHorizontal: 14, paddingVertical: 10, marginRight: 2, borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  chartTabActive: { borderBottomColor: '#dc2626' },
+  chartTabActive: { borderBottomColor: '#2563EB' },
   chartTabText: { color: '#666', fontSize: 13, fontWeight: '500' },
-  chartTabTextActive: { color: '#dc2626' },
+  chartTabTextActive: { color: '#2563EB' },
   addChartBtn: { paddingHorizontal: 12, paddingVertical: 10 },
-  chartWrapper: { flex: 1, backgroundColor: '#000000', minHeight: 400 },
-  sentimentSection: { backgroundColor: '#000000', paddingHorizontal: 16, paddingVertical: 12 },
+  chartWrapper: { flex: 1, backgroundColor: '#1E1E1E', minHeight: 400 },
+  sentimentSection: { backgroundColor: '#1E1E1E', paddingHorizontal: 16, paddingVertical: 12 },
   sentimentTitle: { color: '#fff', fontSize: 16, fontWeight: '600', marginBottom: 8 },
-  sentimentWidget: { height: 180, backgroundColor: '#0a0a0a', borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#1a1a1a' },
-  chartPriceBar: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#000000' },
+  sentimentWidget: { height: 180, backgroundColor: '#1E1E1E', borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#333333' },
+  chartPriceBar: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#1E1E1E' },
   chartPriceItem: { alignItems: 'center' },
   chartPriceLabel: { color: '#666', fontSize: 11, marginBottom: 2 },
-  chartBidPrice: { color: '#dc2626', fontSize: 16, fontWeight: '600' },
+  chartBidPrice: { color: '#2563EB', fontSize: 16, fontWeight: '600' },
   chartAskPrice: { color: '#ef4444', fontSize: 16, fontWeight: '600' },
   chartSpread: { color: '#fff', fontSize: 14 },
-  chartOneClickContainer: { backgroundColor: '#000000', paddingBottom: 16 },
+  chartOneClickContainer: { backgroundColor: '#1E1E1E', paddingBottom: 16 },
   chartVolumeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8, gap: 16 },
-  chartVolBtn: { width: 32, height: 32, backgroundColor: '#000000', borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
+  chartVolBtn: { width: 32, height: 32, backgroundColor: '#1E1E1E', borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   chartVolText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   chartButtons: { flexDirection: 'row', gap: 10, paddingHorizontal: 12 },
   chartSellBtn: { flex: 1, backgroundColor: '#ef4444', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
@@ -4966,23 +5458,37 @@ const styles = StyleSheet.create({
   chartBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
   chartBtnLabel: { color: '#fff', fontSize: 12, fontWeight: '600', opacity: 0.9 },
   chartBtnPrice: { color: '#fff', fontSize: 16, fontWeight: 'bold', marginTop: 2 },
-  orderSlidePanel: { backgroundColor: '#000000', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40 },
-  orderPanelHandle: { width: 40, height: 4, backgroundColor: '#000000', borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
-  symbolPickerModal: { backgroundColor: '#000000', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '70%' },
-  symbolPickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: '#000000' },
-  symbolPickerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  symbolPickerItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#000000' },
-  symbolPickerItemActive: { backgroundColor: '#dc262610' },
-  symbolPickerSymbol: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  symbolPickerName: { color: '#666', fontSize: 12, marginTop: 2 },
+  orderSlidePanel: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40 },
+  orderPanelHandle: { width: 40, height: 4, backgroundColor: '#1E1E1E', borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
+  symbolPickerModal: { borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '70%' },
+  symbolPickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1 },
+  symbolPickerHeaderLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 },
+  symbolPickerBackBtn: { marginRight: 4 },
+  symbolPickerTitle: { fontSize: 18, fontWeight: 'bold', flexShrink: 1 },
+  symbolPickerItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1 },
+  symbolPickerSymbol: { fontSize: 16, fontWeight: '600' },
+  symbolPickerName: { fontSize: 12, marginTop: 2 },
+  chartAddSegmentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+  },
+  chartAddSegmentLabel: { fontSize: 16, fontWeight: '600' },
+  chartAddSegmentRight: { flexDirection: 'row', alignItems: 'center' },
+  chartAddSegmentCount: { fontSize: 13, fontWeight: '500' },
+  chartAddEmptyWrap: { padding: 32, alignItems: 'center' },
+  chartAddEmptyText: { fontSize: 15, textAlign: 'center' },
   
   // Quick Trade Bar - Screenshot Style
   quickTradeBarTop: { 
     flexDirection: 'row', 
     alignItems: 'stretch', 
-    backgroundColor: '#000000',
+    backgroundColor: '#1E1E1E',
     borderBottomWidth: 1,
-    borderBottomColor: '#000000',
+    borderBottomColor: '#333333',
   },
   sellPriceBtn: { 
     flex: 1,
@@ -5008,7 +5514,7 @@ const styles = StyleSheet.create({
   lotControlCenter: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#333333',
     paddingHorizontal: 4,
     borderRadius: 8,
   },
@@ -5017,7 +5523,7 @@ const styles = StyleSheet.create({
     height: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     borderRadius: 6,
     marginRight: 4,
   },
@@ -5026,7 +5532,7 @@ const styles = StyleSheet.create({
     height: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     borderRadius: 6,
     marginLeft: 4,
   },
@@ -5044,44 +5550,44 @@ const styles = StyleSheet.create({
   
   // Leverage Picker Modal
   leverageModalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.8)' },
-  leverageModalContent: { backgroundColor: '#000000', borderRadius: 16, padding: 16, width: 200 },
+  leverageModalContent: { backgroundColor: '#1E1E1E', borderRadius: 16, padding: 16, width: 200 },
   leverageModalTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center', marginBottom: 12 },
   leverageModalItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 8 },
-  leverageModalItemActive: { backgroundColor: '#dc262620' },
+  leverageModalItemActive: { backgroundColor: '#2563EB20' },
   leverageModalItemText: { color: '#888', fontSize: 14, fontWeight: '600' },
-  leverageModalItemTextActive: { color: '#dc2626' },
+  leverageModalItemTextActive: { color: '#2563EB' },
   
   // Leverage Selector
   leverageSelector: { flexDirection: 'row', gap: 6 },
-  leverageOption: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#000000', borderRadius: 6, borderWidth: 1, borderColor: '#1a1a1a' },
-  leverageOptionActive: { backgroundColor: '#dc262620', borderColor: '#dc2626' },
+  leverageOption: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#1E1E1E', borderRadius: 6, borderWidth: 1, borderColor: '#333333' },
+  leverageOptionActive: { backgroundColor: '#2563EB20', borderColor: '#2563EB' },
   leverageOptionText: { color: '#888', fontSize: 12, fontWeight: '600' },
-  leverageOptionTextActive: { color: '#dc2626' },
+  leverageOptionTextActive: { color: '#2563EB' },
   
   // Account Selector - Below search bar
-  accountSelector: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#000000', marginHorizontal: 12, marginTop: 0, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#1a1a1a' },
+  accountSelector: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#1E1E1E', marginHorizontal: 12, marginTop: 0, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#333333' },
   accountSelectorLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  accountIcon: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#dc262620', justifyContent: 'center', alignItems: 'center' },
+  accountIcon: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#2563EB20', justifyContent: 'center', alignItems: 'center' },
   accountSelectorLabel: { color: '#666', fontSize: 9 },
   accountSelectorValue: { color: '#fff', fontSize: 12, fontWeight: '600' },
   
   // Account Picker Modal
   accountPickerOverlay: { flex: 1, justifyContent: 'flex-end' },
   accountPickerBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)' },
-  accountPickerContent: { backgroundColor: '#000000', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '60%' },
-  accountPickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: '#000000' },
+  accountPickerContent: { backgroundColor: '#1E1E1E', borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '60%' },
+  accountPickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: '#333333' },
   accountPickerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   accountPickerList: { paddingHorizontal: 12, paddingBottom: 40 },
   accountPickerSectionTitle: { fontSize: 12, fontWeight: '600', paddingHorizontal: 4, paddingTop: 12, paddingBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 },
-  accountPickerItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, marginVertical: 4, backgroundColor: '#000000', borderRadius: 12 },
-  accountPickerItemActive: { backgroundColor: '#dc262615', borderWidth: 1, borderColor: '#dc2626' },
+  accountPickerItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, marginVertical: 4, backgroundColor: '#1E1E1E', borderRadius: 12 },
+  accountPickerItemActive: { backgroundColor: '#2563EB15', borderWidth: 1, borderColor: '#2563EB' },
   accountPickerItemLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  accountPickerIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center' },
-  accountPickerIconActive: { backgroundColor: '#dc262620' },
+  accountPickerIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#1E1E1E', justifyContent: 'center', alignItems: 'center' },
+  accountPickerIconActive: { backgroundColor: '#2563EB20' },
   accountPickerNumber: { color: '#fff', fontSize: 15, fontWeight: '600' },
   accountPickerType: { color: '#666', fontSize: 12, marginTop: 2 },
   accountPickerItemRight: { alignItems: 'flex-end', gap: 4 },
-  accountPickerBalance: { color: '#dc2626', fontSize: 16, fontWeight: 'bold' },
+  accountPickerBalance: { color: '#2563EB', fontSize: 16, fontWeight: 'bold' },
   
   // Quick SL Modal for Challenge Accounts
   quickSlModalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)' },

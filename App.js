@@ -1,11 +1,25 @@
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import React, { Component } from 'react';
+import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { View, Text, StyleSheet, LogBox } from 'react-native';
 import { AuthProvider } from './src/context/AuthContext';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
+
+// Ignore specific warnings for better performance
+LogBox.ignoreLogs([
+  'Non-serializable values were found in the navigation state',
+  'VirtualizedLists should never be nested',
+]);
+
+// Disable all console logs in production for better performance
+if (!__DEV__) {
+  console.log = () => {};
+  console.warn = () => {};
+  console.error = () => {};
+}
 
 import SignupScreen from './src/screens/SignupScreen';
 import LoginScreen from './src/screens/LoginScreen';
@@ -15,6 +29,7 @@ import WalletScreen from './src/screens/WalletScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
 import SupportScreen from './src/screens/SupportScreen';
 import CopyTradeScreen from './src/screens/CopyTradeScreen';
+import SocialScreen from './src/screens/SocialScreen';
 import IBScreen from './src/screens/IBScreen';
 import AccountsScreen from './src/screens/AccountsScreen';
 import OrderBookScreen from './src/screens/OrderBookScreen';
@@ -23,10 +38,39 @@ import NotificationsScreen from './src/screens/NotificationsScreen';
 import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
 import ChallengeRulesScreen from './src/screens/ChallengeRulesScreen';
 import BuyChallengeScreen from './src/screens/BuyChallengeScreen';
+import PortfolioScreen from './src/screens/PortfolioScreen';
+import BusinessScreen from './src/screens/BusinessScreen';
 
 const Stack = createNativeStackNavigator();
 
-// Inner app component that can use theme
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('App crashed:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={[styles.errorContainer, { backgroundColor: this.props.bgColor || '#121212' }]}>
+          <Text style={styles.errorText}>Something went wrong</Text>
+          <Text style={styles.errorSubtext}>Please restart the app</Text>
+        </View>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 const AppContent = () => {
   const { colors, isDark } = useTheme();
   
@@ -48,7 +92,9 @@ const AppContent = () => {
         <Stack.Screen name="Profile" component={ProfileScreen} />
         <Stack.Screen name="Support" component={SupportScreen} />
         <Stack.Screen name="CopyTrade" component={CopyTradeScreen} />
+        <Stack.Screen name="Social" component={SocialScreen} />
         <Stack.Screen name="IB" component={IBScreen} />
+        <Stack.Screen name="Business" component={BusinessScreen} />
         <Stack.Screen name="Accounts" component={AccountsScreen} />
         <Stack.Screen name="OrderBook" component={OrderBookScreen} />
         <Stack.Screen name="Instructions" component={InstructionsScreen} />
@@ -56,41 +102,76 @@ const AppContent = () => {
         <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
         <Stack.Screen name="ChallengeRules" component={ChallengeRulesScreen} />
         <Stack.Screen name="BuyChallenge" component={BuyChallengeScreen} />
+        <Stack.Screen name="Portfolio" component={PortfolioScreen} />
       </Stack.Navigator>
     </>
   );
 };
 
-export default function App() {
+function AppWithNavigation() {
+  const { colors, isDark } = useTheme();
+  const navTheme = isDark ? DarkTheme : DefaultTheme;
+  const mergedTheme = {
+    ...navTheme,
+    colors: {
+      ...navTheme.colors,
+      primary: colors.primary,
+      background: colors.bgPrimary,
+      card: colors.bgCard,
+      text: colors.textPrimary,
+      border: colors.border,
+      notification: colors.accent,
+    },
+  };
+
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000000' }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bgPrimary }}>
       <SafeAreaProvider>
-        <ThemeProvider>
-          <AuthProvider>
+        <AuthProvider>
+          <ErrorBoundary bgColor={colors.bgPrimary}>
             <NavigationContainer
-            theme={{
-              dark: true,
-              colors: {
-                primary: '#d4af37',
-                background: '#000000',
-                card: '#000000',
-                text: '#ffffff',
-                border: '#1a1a1a',
-                notification: '#d4af37',
-              },
-              fonts: {
-                regular: { fontFamily: 'System', fontWeight: '400' },
-                medium: { fontFamily: 'System', fontWeight: '500' },
-                bold: { fontFamily: 'System', fontWeight: '700' },
-                heavy: { fontFamily: 'System', fontWeight: '900' },
-              },
-            }}
-          >
-            <AppContent />
+              theme={{
+                ...mergedTheme,
+                fonts: {
+                  regular: { fontFamily: 'System', fontWeight: '400' },
+                  medium: { fontFamily: 'System', fontWeight: '500' },
+                  bold: { fontFamily: 'System', fontWeight: '700' },
+                  heavy: { fontFamily: 'System', fontWeight: '900' },
+                },
+              }}
+            >
+              <AppContent />
             </NavigationContainer>
-          </AuthProvider>
-        </ThemeProvider>
+          </ErrorBoundary>
+        </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppWithNavigation />
+    </ThemeProvider>
+  );
+}
+
+const styles = StyleSheet.create({
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  errorText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+  errorSubtext: {
+    color: '#64748b',
+    fontSize: 14,
+  },
+});

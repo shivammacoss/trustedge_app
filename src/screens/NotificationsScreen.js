@@ -44,19 +44,28 @@ const NotificationsScreen = ({ navigation }) => {
 
   const fetchNotifications = async () => {
     try {
-      const res = await fetch(`${API_URL}/notifications/user/${user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      if (!token) { setLoading(false); return; }
+      const res = await fetch(`${API_URL}/notifications`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
-      const notifs = data.notifications || [];
-      if (notifs.length > 0) {
-        setNotifications(notifs);
-        groupNotificationsByDate(notifs);
+      const notifs = data.items || data.notifications || [];
+      // Map PTD2 fields
+      const mapped = notifs.map(n => ({
+        ...n,
+        _id: n.id || n._id,
+        createdAt: n.created_at || n.createdAt,
+        read: n.is_read || n.read || false,
+      }));
+      if (mapped.length > 0) {
+        setNotifications(mapped);
+        groupNotificationsByDate(mapped);
       } else {
-        // Show sample notifications for demo if no real notifications
         generateSampleNotifications();
       }
     } catch (e) {
       console.error('Error fetching notifications:', e);
-      // Generate sample notifications for demo
       generateSampleNotifications();
     }
     setLoading(false);
@@ -174,13 +183,13 @@ const NotificationsScreen = ({ navigation }) => {
   const getNotificationIcon = (type) => {
     switch (type) {
       case 'TRADE_OPEN':
-        return { name: 'arrow-up-circle', color: '#dc2626', bg: '#dc262620' };
+        return { name: 'arrow-up-circle', color: '#2563EB', bg: '#2563EB20' };
       case 'TRADE_CLOSE':
         return { name: 'checkmark-circle', color: '#22c55e', bg: '#22c55e20' };
       case 'STOP_LOSS_HIT':
         return { name: 'alert-circle', color: '#ef4444', bg: '#ef444420' };
       case 'TAKE_PROFIT_HIT':
-        return { name: 'trophy', color: '#dc2626', bg: '#dc262620' };
+        return { name: 'trophy', color: '#2563EB', bg: '#2563EB20' };
       case 'PENDING_ORDER':
         return { name: 'time', color: '#a855f7', bg: '#a855f720' };
       case 'PENDING_TRIGGERED':
@@ -188,7 +197,7 @@ const NotificationsScreen = ({ navigation }) => {
       case 'DEPOSIT':
         return { name: 'wallet', color: '#22c55e', bg: '#22c55e20' };
       case 'WITHDRAWAL':
-        return { name: 'arrow-down-circle', color: '#dc2626', bg: '#dc262620' };
+        return { name: 'arrow-down-circle', color: '#2563EB', bg: '#2563EB20' };
       case 'COPY_TRADE':
         return { name: 'copy', color: '#06b6d4', bg: '#06b6d420' };
       default:
@@ -207,7 +216,11 @@ const NotificationsScreen = ({ navigation }) => {
 
   const markAsRead = async (notifId) => {
     try {
-      await fetch(`${API_URL}/notifications/${notifId}/read`, { method: 'PUT' });
+      const token = await SecureStore.getItemAsync('token');
+      await fetch(`${API_URL}/notifications/${notifId}/read`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       setNotifications(prev => 
         prev.map(n => n._id === notifId ? { ...n, read: true } : n)
       );
@@ -218,11 +231,15 @@ const NotificationsScreen = ({ navigation }) => {
 
   const markAllAsRead = async () => {
     try {
-      await fetch(`${API_URL}/notifications/user/${user._id}/read-all`, { method: 'PUT' });
-      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
-      groupNotificationsByDate(notifications.map(n => ({ ...n, read: true })));
+      const token = await SecureStore.getItemAsync('token');
+      await fetch(`${API_URL}/notifications/read-all`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const updated = notifications.map(n => ({ ...n, read: true }));
+      setNotifications(updated);
+      groupNotificationsByDate(updated);
     } catch (e) {
-      // Update locally anyway
       const updated = notifications.map(n => ({ ...n, read: true }));
       setNotifications(updated);
       groupNotificationsByDate(updated);
@@ -331,7 +348,7 @@ const styles = StyleSheet.create({
   backBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
   headerTitle: { fontSize: 18, fontWeight: 'bold' },
   markAllBtn: { paddingHorizontal: 8, paddingVertical: 4 },
-  markAllText: { color: '#dc2626', fontSize: 13, fontWeight: '500' },
+  markAllText: { color: '#2563EB', fontSize: 13, fontWeight: '500' },
   
   // Unread Banner
   unreadBanner: { 
@@ -341,17 +358,17 @@ const styles = StyleSheet.create({
     marginBottom: 12, 
     paddingHorizontal: 14, 
     paddingVertical: 10, 
-    backgroundColor: '#dc262620', 
+    backgroundColor: '#2563EB20', 
     borderRadius: 10 
   },
   unreadDot: { 
     width: 8, 
     height: 8, 
     borderRadius: 4, 
-    backgroundColor: '#dc2626', 
+    backgroundColor: '#2563EB', 
     marginRight: 10 
   },
-  unreadText: { color: '#dc2626', fontSize: 13, fontWeight: '500' },
+  unreadText: { color: '#2563EB', fontSize: 13, fontWeight: '500' },
   
   // Empty State
   emptyState: { alignItems: 'center', paddingVertical: 60, paddingHorizontal: 40 },
@@ -390,7 +407,7 @@ const styles = StyleSheet.create({
   },
   unreadCard: { 
     backgroundColor: '#0a1628',
-    borderColor: '#1e3a5f'
+    borderColor: '#333333'
   },
   notifContent: { 
     flexDirection: 'row', 
@@ -420,7 +437,7 @@ const styles = StyleSheet.create({
     top: 0, 
     bottom: 0, 
     width: 4, 
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     borderTopLeftRadius: 16,
     borderBottomLeftRadius: 16
   },

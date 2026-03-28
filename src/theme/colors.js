@@ -1,70 +1,60 @@
-// Venta Black (Dark Mode) & Pearl White (Light Mode) Theme
+// Align with ThemeContext (Material-style dark / clean light)
 import { useColorScheme } from 'react-native';
 
 export const darkTheme = {
-  // Backgrounds
-  background: '#0a0a0a',
-  card: '#121212',
-  cardAlt: '#1a1a1a',
-  surface: '#0d0d0d',
-  
-  // Text
-  text: '#ffffff',
-  textSecondary: '#888888',
-  textMuted: '#666666',
-  
-  // Borders
-  border: '#1a1a1a',
-  borderLight: '#2a2a2a',
-  
-  // Accent
-  primary: '#d4af37',
-  primaryLight: '#d4af3720',
-  
-  // Status
-  success: '#22c55e',
-  successLight: '#22c55e20',
-  danger: '#ff4444',
-  dangerLight: '#ff444420',
-  warning: '#fbbf24',
-  warningLight: '#fbbf2420',
-  info: '#dc2626',
-  infoLight: '#dc262620',
-  purple: '#8b5cf6',
-  purpleLight: '#8b5cf620',
+  background: '#121212',
+  card: '#1E1E1E',
+  cardAlt: '#252525',
+  surface: '#252525',
+
+  text: '#F4F4F5',
+  textSecondary: '#A1A1AA',
+  textMuted: '#71717A',
+
+  border: '#333333',
+  borderLight: '#404040',
+
+  primary: '#2563EB',
+  primaryLight: '#2563EB28',
+
+  success: '#22C55E',
+  successLight: '#22C55E20',
+  danger: '#EF4444',
+  dangerLight: '#EF444420',
+  warning: '#FBBF24',
+  warningLight: '#FBBF2420',
+  info: '#2563EB',
+  infoLight: '#2563EB20',
+  purple: '#8B5CF6',
+  purpleLight: '#8B5CF620',
 };
 
 export const lightTheme = {
-  // Backgrounds - Pearl White
-  background: '#f5f5f5',
-  card: '#ffffff',
-  cardAlt: '#fafafa',
-  surface: '#ffffff',
-  
-  // Text
-  text: '#1a1a1a',
-  textSecondary: '#666666',
-  textMuted: '#999999',
-  
-  // Borders
-  border: '#e5e5e5',
-  borderLight: '#eeeeee',
-  
-  // Accent - Blue for light mode
-  primary: '#2563eb',
-  primaryLight: '#2563eb20',
-  
-  // Status
-  success: '#22c55e',
-  successLight: '#22c55e20',
-  danger: '#ff4444',
-  dangerLight: '#ff444420',
-  warning: '#fbbf24',
-  warningLight: '#fbbf2420',
-  info: '#2563eb',
-  infoLight: '#2563eb20',
-  purple: '#8b5cf6',
-  purpleLight: '#8b5cf620',
+  background: '#FFFFFF',
+  card: '#F8FAFC',
+  cardAlt: '#F1F5F9',
+  surface: '#F8FAFC',
+
+  text: '#0F172A',
+  textSecondary: '#475569',
+  textMuted: '#64748B',
+
+  border: '#E2E8F0',
+  borderLight: '#F1F5F9',
+
+  primary: '#2563EB',
+  primaryLight: '#2563EB20',
+
+  success: '#22C55E',
+  successLight: '#22C55E20',
+  danger: '#EF4444',
+  dangerLight: '#EF444420',
+  warning: '#FBBF24',
+  warningLight: '#FBBF2420',
+  info: '#2563EB',
+  infoLight: '#2563EB20',
+  purple: '#8B5CF6',
+  purpleLight: '#8B5CF620',
 };
 
 export const useTheme = () => {

@@ -38,8 +38,12 @@ const LoginScreen = ({ navigation }) => {
   const checkExistingAuth = async () => {
     try {
       const userData = await SecureStore.getItemAsync('user');
-      if (userData) {
+      const token = await SecureStore.getItemAsync('token');
+      if (userData && token) {
+        console.log('User already logged in, navigating to MainTrading');
         navigation.replace('MainTrading');
+      } else {
+        console.log('No valid auth found, staying on Login');
       }
     } catch (e) {
       console.error('Error checking auth:', e);
@@ -48,53 +52,66 @@ const LoginScreen = ({ navigation }) => {
   };
 
   const handleLogin = async () => {
-    if (!formData.email || !formData.password) {
+    // Normalize: trim whitespace + lowercase email
+    const email = formData.email.trim().toLowerCase();
+    const password = formData.password.trim();
+
+    if (!email || !password) {
       Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      Alert.alert('Error', 'Please enter a valid email address');
       return;
     }
 
     setLoading(true);
     try {
-      console.log('Attempting login to:', `${AUTH_URL}/login`);
-      console.log('Form data:', { email: formData.email, password: '***' });
-      
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15000);
-      
+
       const response = await fetch(`${AUTH_URL}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({ email, password }),
         signal: controller.signal,
       });
-      
+
       clearTimeout(timeoutId);
-      
+
       const data = await response.json();
-      console.log('Login response status:', response.status);
-      console.log('Login response:', data);
-      
+      console.log('Login response status:', response.status, data?.detail || '');
+
       if (!response.ok) {
-        throw new Error(data.message || 'Login failed');
+        const errMsg = data.detail || data.message || `Login failed (${response.status})`;
+        throw new Error(errMsg);
       }
-      
-      // Store user data securely
-      await SecureStore.setItemAsync('user', JSON.stringify(data.user));
-      if (data.token) {
-        await SecureStore.setItemAsync('token', data.token);
-      }
-      
-      // Navigate to MainTrading screen
+
+      const token = data.access_token;
+      if (!token) throw new Error('No access token received from server');
+
+      await SecureStore.setItemAsync('token', token);
+      await SecureStore.setItemAsync('user', JSON.stringify({
+        id: data.user_id,
+        email,
+        role: data.role,
+        expires_at: data.expires_at,
+      }));
+
       navigation.replace('MainTrading');
     } catch (error) {
       console.error('Login error:', error);
       let errorMsg = error.message;
       if (error.name === 'AbortError') {
-        errorMsg = 'Connection timeout. Please check your network and ensure you are on the same WiFi as the server.';
+        errorMsg = 'Connection timeout. Please check your internet connection.';
       } else if (error.message === 'Network request failed') {
-        errorMsg = 'Cannot connect to server. Please ensure:\n1. Phone is on same WiFi as server\n2. Backend is running on port 5001';
+        errorMsg = 'Cannot connect to server. Please check your internet connection.';
+      } else if (error.message === 'Invalid credentials') {
+        errorMsg = 'Email or password is incorrect. Please check and try again.';
       }
-      Alert.alert('Login Error', `${errorMsg}\n\nServer: ${AUTH_URL}`);
+      Alert.alert('Login Failed', errorMsg);
     } finally {
       setLoading(false);
     }
@@ -113,7 +130,7 @@ const LoginScreen = ({ navigation }) => {
       style={styles.container} 
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <StatusBar barStyle="light-content" backgroundColor="#000000" />
+      <StatusBar barStyle="light-content" backgroundColor="#121212" />
       <ScrollView 
         style={styles.scrollView} 
         contentContainerStyle={styles.content}
@@ -122,11 +139,11 @@ const LoginScreen = ({ navigation }) => {
         {/* Logo */}
         <View style={styles.logoContainer}>
           <Image 
-            source={require('../../assets/SetupFX.png')} 
+            source={require('../../assets/logo.png')} 
             style={styles.logoImage}
             resizeMode="contain"
           />
-          <Text style={styles.brandName}>SetupFX24</Text>
+          <Text style={styles.brandName}>ProTrader</Text>
         </View>
 
         {/* Tab Switcher */}
@@ -189,7 +206,7 @@ const LoginScreen = ({ navigation }) => {
           disabled={loading}
         >
           {loading ? (
-            <ActivityIndicator color="#000" />
+            <ActivityIndicator color="#ffffff" />
           ) : (
             <Text style={styles.buttonText}>Sign in</Text>
           )}
@@ -210,7 +227,7 @@ const LoginScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#121212',
   },
   scrollView: {
     flex: 1,
@@ -228,7 +245,7 @@ const styles = StyleSheet.create({
   logo: {
     width: 60,
     height: 60,
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
@@ -251,7 +268,7 @@ const styles = StyleSheet.create({
   },
   tabContainer: {
     flexDirection: 'row',
-    backgroundColor: '#000000',
+    backgroundColor: '#1E1E1E',
     borderRadius: 12,
     padding: 4,
     marginBottom: 32,
@@ -263,7 +280,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   activeTab: {
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
   },
   tabText: {
     color: '#666',
@@ -271,7 +288,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   activeTabText: {
-    color: '#000',
+    color: '#ffffff',
     fontSize: 15,
     fontWeight: '600',
   },
@@ -289,9 +306,9 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#000000',
+    backgroundColor: '#1E1E1E',
     borderWidth: 1,
-    borderColor: '#000000',
+    borderColor: '#333333',
     borderRadius: 12,
     marginBottom: 16,
     paddingHorizontal: 16,
@@ -313,12 +330,12 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   forgotText: {
-    color: '#dc2626',
+    color: '#2563EB',
     fontSize: 14,
     fontWeight: '500',
   },
   button: {
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
@@ -327,7 +344,7 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   buttonText: {
-    color: '#000',
+    color: '#ffffff',
     fontSize: 16,
     fontWeight: 'bold',
   },
@@ -339,7 +356,7 @@ const styles = StyleSheet.create({
   line: {
     flex: 1,
     height: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#333333',
   },
   dividerText: {
     color: '#666',
@@ -354,9 +371,9 @@ const styles = StyleSheet.create({
   socialButton: {
     width: 56,
     height: 56,
-    backgroundColor: '#000000',
+    backgroundColor: '#1E1E1E',
     borderWidth: 1,
-    borderColor: '#000000',
+    borderColor: '#333333',
     borderRadius: 28,
     justifyContent: 'center',
     alignItems: 'center',
@@ -371,7 +388,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   signupLink: {
-    color: '#dc2626',
+    color: '#2563EB',
     fontSize: 15,
     fontWeight: '600',
   },

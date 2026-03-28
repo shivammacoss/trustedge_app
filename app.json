@@ -1,23 +1,21 @@
 {
   "expo": {
-    "name": "SetupFX24",
-    "slug": "setupfx24",
+    "name": "ProTrader",
+    "slug": "protrader",
     "version": "1.0.0",
     "runtimeVersion": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/Setupfx app icon.png",
+    "icon": "./assets/logo.png",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
+    "jsEngine": "hermes",
     "splash": {
-      "image": "./assets/SetupFX.png",
+      "image": "./assets/logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#000000"
+      "backgroundColor": "#121212"
     },
     "updates": {
-      "enabled": true,
-      "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 0,
-      "url": "https://u.expo.dev/b998437a-a10b-49c5-8e51-020efdc57111"
+      "enabled": false
     },
     "ios": {
       "supportsTablet": true,
@@ -27,28 +25,30 @@
           "NSAllowsLocalNetworking": true
         }
       },
-      "bundleIdentifier": "com.setupfx24.app"
+      "bundleIdentifier": "com.protrader.app"
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/Setupfx app icon.png",
-        "backgroundColor": "#FFFFFF"
+        "foregroundImage": "./assets/logo.png",
+        "backgroundColor": "#121212"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.setupfx24.app"
+      "package": "com.protrader.app",
+      "enableProguardInReleaseBuilds": true,
+      "enableShrinkResourcesInReleaseBuilds": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "extra": {
       "eas": {
-        "projectId": "b998437a-a10b-49c5-8e51-020efdc57111"
+        "projectId": "92604a12-1bd0-4257-abf2-8ab62122d2fe"
       }
     },
-    "owner": "shivam92388",
     "plugins": [
       "expo-font",
-      "expo-updates"
+      "expo-updates",
+      "expo-secure-store"
     ]
   }
 }

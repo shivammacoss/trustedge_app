@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -11,19 +11,15 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
-import { API_URL } from '../config/api';
+import { API_URL } from '../config';
 import { useTheme } from '../context/ThemeContext';
 import socketService from '../services/socketService';
 
 const OrderBookScreen = ({ navigation }) => {
   const { colors, isDark } = useTheme();
-  const [user, setUser] = useState(null);
   const [accounts, setAccounts] = useState([]);
-  const [challengeAccounts, setChallengeAccounts] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState('all');
-  const [selectedAccountType, setSelectedAccountType] = useState('regular'); // 'regular', 'challenge', 'all'
-  const [accountsFetched, setAccountsFetched] = useState(false);
-  const [activeTab, setActiveTab] = useState('positions'); // positions, pending, history
+  const [activeTab, setActiveTab] = useState('positions');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [openTrades, setOpenTrades] = useState([]);
@@ -31,206 +27,189 @@ const OrderBookScreen = ({ navigation }) => {
   const [closedTrades, setClosedTrades] = useState([]);
   const [livePrices, setLivePrices] = useState({});
   const [showAccountPicker, setShowAccountPicker] = useState(false);
-  const [historyFilter, setHistoryFilter] = useState('all'); // all, today, week, month, year
+  const [historyFilter, setHistoryFilter] = useState('all');
 
   useEffect(() => {
-    loadUserAndData();
+    loadData();
   }, []);
-
-  // Load user and immediately start fetching data
-  const loadUserAndData = async () => {
-    try {
-      const userData = await SecureStore.getItemAsync('user');
-      if (userData) {
-        const parsedUser = JSON.parse(userData);
-        setUser(parsedUser);
-        // Immediately fetch accounts and trades in parallel
-        fetchAccountsAndTrades(parsedUser);
-      } else {
-        navigation.replace('Login');
-      }
-    } catch (e) {
-      console.error('Error loading user:', e);
-      setLoading(false);
-    }
-  };
-
-  // Fetch accounts and trades together for faster loading
-  const fetchAccountsAndTrades = async (userData) => {
-    try {
-      const userId = userData._id || userData.id;
-      console.log('[OrderBook] Fetching accounts for userId:', userId);
-      
-      if (!userId) {
-        console.warn('[OrderBook] No user ID found in userData:', userData);
-        setAccountsFetched(true);
-        setLoading(false);
-        return;
-      }
-      
-      // Fetch regular and challenge accounts in parallel
-      const [regularRes, challengeRes] = await Promise.all([
-        fetch(`${API_URL}/trading-accounts/user/${userId}`),
-        fetch(`${API_URL}/prop/my-accounts/${userId}`)
-      ]);
-      
-      const regularData = await regularRes.json();
-      const challengeData = await challengeRes.json();
-      
-      console.log('[OrderBook] Regular accounts response:', regularData);
-      console.log('[OrderBook] Challenge accounts response:', challengeData);
-      
-      // Handle response structures - regular accounts use .accounts, challenge uses .accounts too
-      const accountsList = regularData.accounts || [];
-      const challengeList = (challengeData.success && challengeData.accounts) 
-        ? challengeData.accounts.filter(c => c.status === 'ACTIVE') 
-        : [];
-      
-      console.log('[OrderBook] Accounts list:', accountsList.length, 'Challenge list:', challengeList.length);
-      
-      setAccounts(accountsList);
-      setChallengeAccounts(challengeList);
-      setAccountsFetched(true);
-      
-      if (accountsList.length > 0 || challengeList.length > 0) {
-        await fetchTradesForAccounts(accountsList, challengeList);
-      }
-      setLoading(false);
-    } catch (e) {
-      console.warn('[OrderBook] Error fetching accounts:', e.message);
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if ((accounts.length > 0 || challengeAccounts.length > 0) && !loading) {
-      fetchAllTrades();
-    }
-  }, [selectedAccount, accounts.length, challengeAccounts.length]);
 
   // WebSocket for real-time price updates
   useEffect(() => {
-    // Connect to WebSocket if not already connected
     socketService.connect();
-    
-    // Subscribe to price updates
     const unsubscribe = socketService.addPriceListener((prices) => {
       if (prices && Object.keys(prices).length > 0) {
         setLivePrices(prices);
       }
     });
-    
     return () => unsubscribe();
   }, []);
 
-  // Optimized: Fetch trades for given accounts list
-  const fetchTradesForAccounts = async (accountsList, challengeList = []) => {
+  const loadData = async () => {
     try {
-      // Determine which accounts to fetch based on selection
-      let regularToFetch = [];
-      let challengeToFetch = [];
-      
-      if (selectedAccount === 'all') {
-        regularToFetch = accountsList;
-        challengeToFetch = challengeList;
-      } else if (selectedAccount.startsWith('challenge_')) {
-        const challengeId = selectedAccount.replace('challenge_', '');
-        challengeToFetch = challengeList.filter(c => c._id === challengeId);
-      } else {
-        regularToFetch = accountsList.filter(a => a._id === selectedAccount);
-      }
+      const token = await SecureStore.getItemAsync('token');
+      if (!token) { navigation.replace('Login'); return; }
 
-      // Fetch regular account trades
-      const regularPromises = regularToFetch.map(async (account) => {
-        const [openRes, historyRes, pendingRes] = await Promise.all([
-          fetch(`${API_URL}/trade/open/${account._id}`),
-          fetch(`${API_URL}/trade/history/${account._id}?limit=20`),
-          fetch(`${API_URL}/trade/pending/${account._id}`)
-        ]);
-
-        const [openData, historyData, pendingData] = await Promise.all([
-          openRes.json(),
-          historyRes.json(),
-          pendingRes.json()
-        ]);
-
-        return {
-          open: openData.success && openData.trades ? openData.trades.map(t => ({ ...t, accountName: account.accountId, isChallenge: false })) : [],
-          closed: historyData.success && historyData.trades ? historyData.trades.map(t => ({ ...t, accountName: account.accountId, isChallenge: false })) : [],
-          pending: pendingData.success && pendingData.trades ? pendingData.trades.map(o => ({ ...o, accountName: account.accountId, isChallenge: false })) : []
-        };
+      // Fetch accounts
+      const accountsRes = await fetch(`${API_URL}/accounts`, {
+        headers: { 'Authorization': `Bearer ${token}` }
       });
+      const accountsData = await accountsRes.json();
+      const items = accountsData.items || accountsData || [];
+      const mapped = items.map(a => ({
+        ...a,
+        _id: a.id || a._id,
+        accountId: a.account_number || a.accountId || a.id,
+      }));
+      setAccounts(mapped);
 
-      // Fetch challenge account trades - use same endpoints as regular accounts (backend handles account type)
-      const challengePromises = challengeToFetch.map(async (challenge) => {
-        const [openRes, historyRes, pendingRes] = await Promise.all([
-          fetch(`${API_URL}/trade/open/${challenge._id}`),
-          fetch(`${API_URL}/trade/history/${challenge._id}?limit=20`),
-          fetch(`${API_URL}/trade/pending/${challenge._id}`)
-        ]);
-
-        const [openData, historyData, pendingData] = await Promise.all([
-          openRes.json(),
-          historyRes.json(),
-          pendingRes.json()
-        ]);
-
-        return {
-          open: openData.success && openData.trades ? openData.trades.map(t => ({ ...t, accountName: `${challenge.accountId} (Challenge)`, isChallenge: true })) : [],
-          closed: historyData.success && historyData.trades ? historyData.trades.map(t => ({ ...t, accountName: `${challenge.accountId} (Challenge)`, isChallenge: true })) : [],
-          pending: pendingData.success && pendingData.trades ? pendingData.trades.map(o => ({ ...o, accountName: `${challenge.accountId} (Challenge)`, isChallenge: true })) : []
-        };
-      });
-
-      const [regularResults, challengeResults] = await Promise.all([
-        Promise.all(regularPromises),
-        Promise.all(challengePromises)
-      ]);
-      
-      const allResults = [...regularResults, ...challengeResults];
-      const allOpen = allResults.flatMap(r => r.open);
-      const allClosed = allResults.flatMap(r => r.closed).sort((a, b) => new Date(b.closedAt) - new Date(a.closedAt));
-      const allPending = allResults.flatMap(r => r.pending);
-
-      setOpenTrades(allOpen);
-      setClosedTrades(allClosed);
-      setPendingOrders(allPending);
+      // Fetch positions & history for all accounts
+      await fetchAllTradesForAccounts(mapped, token);
     } catch (e) {
-      console.error('Error fetching trades:', e);
+      console.error('[OrderBook] Error loading data:', e);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const fetchAllTrades = async () => {
-    if (accounts.length > 0 || challengeAccounts.length > 0) {
-      await fetchTradesForAccounts(accounts, challengeAccounts);
+  useEffect(() => {
+    if (accounts.length > 0 && !loading) {
+      refreshTrades();
+    }
+  }, [selectedAccount]);
+
+  const refreshTrades = async () => {
+    const token = await SecureStore.getItemAsync('token');
+    if (token) await fetchAllTradesForAccounts(accounts, token);
+  };
+
+  const fetchAllTradesForAccounts = async (accountsList, token) => {
+    try {
+      const headers = { 'Authorization': `Bearer ${token}` };
+      
+      // Determine which accounts to fetch
+      let accountsToFetch = accountsList;
+      if (selectedAccount !== 'all') {
+        accountsToFetch = accountsList.filter(a => a._id === selectedAccount);
+      }
+
+      if (accountsToFetch.length === 0) return;
+
+      // Fetch all data in parallel for all accounts
+      const allOpenPromises = accountsToFetch.map(acct =>
+        fetch(`${API_URL}/positions/?account_id=${acct._id}&status=open`, { headers })
+          .then(r => r.ok ? r.json() : [])
+          .then(data => {
+            const items = Array.isArray(data) ? data : (data.items || []);
+            return items.map(p => ({
+              _id: p.id,
+              symbol: p.symbol,
+              side: (p.side || '').toUpperCase(),
+              quantity: p.lots,
+              openPrice: p.open_price,
+              currentPrice: p.current_price,
+              stopLoss: p.stop_loss,
+              takeProfit: p.take_profit,
+              swap: p.swap || 0,
+              commission: p.commission || 0,
+              profit: p.profit || 0,
+              contractSize: p.contract_size || 100000,
+              accountName: acct.accountId,
+              accountId: acct._id,
+              createdAt: p.created_at,
+            }));
+          })
+          .catch(() => [])
+      );
+
+      const allPendingPromises = accountsToFetch.map(acct =>
+        fetch(`${API_URL}/orders/?account_id=${acct._id}&status=pending`, { headers })
+          .then(r => r.ok ? r.json() : [])
+          .then(data => {
+            const items = Array.isArray(data) ? data : (data.items || []);
+            return items.map(o => ({
+              _id: o.id,
+              symbol: o.symbol,
+              side: (o.side || '').toUpperCase(),
+              orderType: (o.order_type || '').toUpperCase().replace('_', ' '),
+              quantity: o.lots,
+              entryPrice: o.price,
+              stopLoss: o.stop_loss,
+              takeProfit: o.take_profit,
+              accountName: acct.accountId,
+              accountId: acct._id,
+              createdAt: o.created_at,
+            }));
+          })
+          .catch(() => [])
+      );
+
+      // Fetch trade history via portfolio/trades
+      const historyAccountParam = selectedAccount !== 'all' ? `&account_id=${selectedAccount}` : '';
+      const historyRes = await fetch(`${API_URL}/portfolio/trades?per_page=50${historyAccountParam}`, { headers });
+      let historyItems = [];
+      if (historyRes.ok) {
+        const histData = await historyRes.json();
+        historyItems = (histData.items || []).map(t => ({
+          _id: t.id,
+          symbol: t.symbol,
+          side: (t.side || '').toUpperCase(),
+          quantity: t.lots,
+          openPrice: t.open_price,
+          closePrice: t.close_price,
+          swap: t.swap || 0,
+          commission: t.commission || 0,
+          realizedPnl: t.pnl || t.profit || 0,
+          closeReason: t.close_reason,
+          openedAt: t.opened_at,
+          closedAt: t.close_time || t.closed_at,
+          accountName: '',
+        }));
+      }
+
+      const [openResults, pendingResults] = await Promise.all([
+        Promise.all(allOpenPromises),
+        Promise.all(allPendingPromises),
+      ]);
+
+      const allOpen = openResults.flat();
+      const allPending = pendingResults.flat();
+
+      setOpenTrades(allOpen);
+      setPendingOrders(allPending);
+      setClosedTrades(historyItems);
+    } catch (e) {
+      console.error('[OrderBook] Error fetching trades:', e);
     }
   };
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchAllTrades();
+    await refreshTrades();
     setRefreshing(false);
   };
 
   const getContractSize = (symbol) => {
     if (symbol === 'XAUUSD') return 100;
     if (symbol === 'XAGUSD') return 5000;
-    if (['BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'XRPUSD', 'ADAUSD', 'DOGEUSD', 'DOTUSD', 'MATICUSD', 'LTCUSD', 'AVAXUSD', 'LINKUSD'].includes(symbol)) return 1;
+    if (['BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'XRPUSD', 'ADAUSD', 'DOGEUSD'].includes(symbol)) return 1;
     return 100000;
   };
 
   const calculateFloatingPnl = (trade) => {
+    // If backend already calculated profit, use it
+    if (trade.profit && trade.profit !== 0) return trade.profit;
+    
     const prices = livePrices[trade.symbol];
     if (!prices || !prices.bid) return 0;
-    
+
     const currentPrice = trade.side === 'BUY' ? prices.bid : prices.ask;
     if (!currentPrice) return 0;
-    
+
     const contractSize = trade.contractSize || getContractSize(trade.symbol);
     const pnl = trade.side === 'BUY'
       ? (currentPrice - trade.openPrice) * trade.quantity * contractSize
       : (trade.openPrice - currentPrice) * trade.quantity * contractSize;
-    
+
     return pnl - (trade.commission || 0) - (trade.swap || 0);
   };
 
@@ -238,34 +217,21 @@ const OrderBookScreen = ({ navigation }) => {
     return openTrades.reduce((sum, trade) => sum + calculateFloatingPnl(trade), 0);
   };
 
-  // Filter trade history based on selected filter
   const getFilteredHistory = () => {
     const now = new Date();
     return closedTrades.filter(trade => {
-      const tradeDate = new Date(trade.closedAt || trade.updatedAt);
+      const tradeDate = new Date(trade.closedAt || trade.openedAt);
       if (historyFilter === 'all') return true;
-      if (historyFilter === 'today') {
-        return tradeDate.toDateString() === now.toDateString();
-      }
-      if (historyFilter === 'week') {
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        return tradeDate >= weekAgo;
-      }
-      if (historyFilter === 'month') {
-        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        return tradeDate >= monthAgo;
-      }
-      if (historyFilter === 'year') {
-        const yearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
-        return tradeDate >= yearAgo;
-      }
+      if (historyFilter === 'today') return tradeDate.toDateString() === now.toDateString();
+      if (historyFilter === 'week') return tradeDate >= new Date(now.getTime() - 7 * 86400000);
+      if (historyFilter === 'month') return tradeDate >= new Date(now.getTime() - 30 * 86400000);
+      if (historyFilter === 'year') return tradeDate >= new Date(now.getTime() - 365 * 86400000);
       return true;
     });
   };
 
-  // Calculate total P&L for filtered history
   const getHistoryTotalPnl = () => {
-    return getFilteredHistory().reduce((sum, trade) => sum + (trade.realizedPnl || trade.pnl || 0), 0);
+    return getFilteredHistory().reduce((sum, trade) => sum + (trade.realizedPnl || 0), 0);
   };
 
   const closeTrade = async (trade) => {
@@ -279,26 +245,21 @@ const OrderBookScreen = ({ navigation }) => {
           style: 'destructive',
           onPress: async () => {
             try {
-              const prices = livePrices[trade.symbol];
-              if (!prices?.bid || !prices?.ask) {
-                Alert.alert('Error', 'Price not available');
-                return;
-              }
-              const res = await fetch(`${API_URL}/trade/close`, {
+              const token = await SecureStore.getItemAsync('token');
+              const res = await fetch(`${API_URL}/positions/${trade._id}/close`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                  tradeId: trade._id,
-                  bid: prices.bid,
-                  ask: prices.ask
-                })
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({})
               });
               const data = await res.json();
-              if (data.success) {
-                Alert.alert('Success', `Trade closed! P/L: $${data.realizedPnl?.toFixed(2)}`);
-                fetchAllTrades();
+              if (res.ok) {
+                Alert.alert('Success', `Trade closed! P/L: $${(data.profit || data.pnl || 0).toFixed(2)}`);
+                refreshTrades();
               } else {
-                Alert.alert('Error', data.message || 'Failed to close trade');
+                Alert.alert('Error', data.detail || data.message || 'Failed to close trade');
               }
             } catch (e) {
               console.error('Close trade error:', e);
@@ -321,15 +282,17 @@ const OrderBookScreen = ({ navigation }) => {
           style: 'destructive',
           onPress: async () => {
             try {
-              const res = await fetch(`${API_URL}/trade/pending/${order._id}`, {
-                method: 'DELETE'
+              const token = await SecureStore.getItemAsync('token');
+              const res = await fetch(`${API_URL}/orders/${order._id}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
               });
-              const data = await res.json();
-              if (data.success) {
+              if (res.ok) {
                 Alert.alert('Success', 'Order cancelled');
-                fetchAllTrades();
+                refreshTrades();
               } else {
-                Alert.alert('Error', data.message || 'Failed to cancel order');
+                const data = await res.json();
+                Alert.alert('Error', data.detail || 'Failed to cancel order');
               }
             } catch (e) {
               Alert.alert('Error', 'Network error');
@@ -342,11 +305,6 @@ const OrderBookScreen = ({ navigation }) => {
 
   const getSelectedAccountName = () => {
     if (selectedAccount === 'all') return 'All Accounts';
-    if (selectedAccount.startsWith('challenge_')) {
-      const challengeId = selectedAccount.replace('challenge_', '');
-      const challenge = challengeAccounts.find(c => c._id === challengeId);
-      return challenge ? `🏆 ${challenge.accountId}` : 'Select Account';
-    }
     const acc = accounts.find(a => a._id === selectedAccount);
     return acc?.accountId || 'Select Account';
   };
@@ -355,7 +313,7 @@ const OrderBookScreen = ({ navigation }) => {
     const pnl = calculateFloatingPnl(trade);
     const prices = livePrices[trade.symbol] || {};
     const currentPrice = trade.side === 'BUY' ? prices.bid : prices.ask;
-    
+
     return (
       <View key={trade._id} style={[styles.tradeCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
         <View style={styles.tradeHeader}>
@@ -369,7 +327,7 @@ const OrderBookScreen = ({ navigation }) => {
           </View>
           <Text style={[styles.accountLabel, { color: colors.textMuted }]}>{trade.accountName}</Text>
         </View>
-        
+
         <View style={styles.tradeDetails}>
           <View style={styles.detailRow}>
             <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Volume</Text>
@@ -381,7 +339,7 @@ const OrderBookScreen = ({ navigation }) => {
           </View>
           <View style={styles.detailRow}>
             <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Current</Text>
-            <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{currentPrice?.toFixed(5) || '...'}</Text>
+            <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{(currentPrice || trade.currentPrice)?.toFixed(5) || '...'}</Text>
           </View>
           <View style={styles.detailRow}>
             <Text style={[styles.detailLabel, { color: colors.textMuted }]}>P/L</Text>
@@ -390,6 +348,13 @@ const OrderBookScreen = ({ navigation }) => {
             </Text>
           </View>
         </View>
+
+        {trade.stopLoss || trade.takeProfit ? (
+          <View style={styles.slTpRow}>
+            {trade.stopLoss && <Text style={[styles.slTpText, { color: '#ef4444' }]}>SL: {trade.stopLoss.toFixed(5)}</Text>}
+            {trade.takeProfit && <Text style={[styles.slTpText, { color: '#22c55e' }]}>TP: {trade.takeProfit.toFixed(5)}</Text>}
+          </View>
+        ) : null}
 
         <TouchableOpacity style={styles.closeBtn} onPress={() => closeTrade(trade)}>
           <Text style={styles.closeBtnText}>Close Position</Text>
@@ -409,13 +374,11 @@ const OrderBookScreen = ({ navigation }) => {
         </View>
         <Text style={[styles.accountLabel, { color: colors.textMuted }]}>{order.accountName}</Text>
       </View>
-      
+
       <View style={styles.tradeDetails}>
         <View style={styles.detailRow}>
           <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Side</Text>
-          <Text style={[styles.detailValue, { color: order.side === 'BUY' ? '#22c55e' : '#ef4444' }]}>
-            {order.side}
-          </Text>
+          <Text style={[styles.detailValue, { color: order.side === 'BUY' ? '#22c55e' : '#ef4444' }]}>{order.side}</Text>
         </View>
         <View style={styles.detailRow}>
           <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Volume</Text>
@@ -444,9 +407,11 @@ const OrderBookScreen = ({ navigation }) => {
             </Text>
           </View>
         </View>
-        <Text style={[styles.accountLabel, { color: colors.textMuted }]}>{trade.accountName}</Text>
+        {trade.closeReason && (
+          <Text style={[styles.accountLabel, { color: colors.textMuted }]}>{trade.closeReason}</Text>
+        )}
       </View>
-      
+
       <View style={styles.tradeDetails}>
         <View style={styles.detailRow}>
           <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Volume</Text>
@@ -467,10 +432,12 @@ const OrderBookScreen = ({ navigation }) => {
           </Text>
         </View>
       </View>
-      
-      <Text style={[styles.dateText, { color: colors.textMuted }]}>
-        {new Date(trade.closedAt).toLocaleDateString()} {new Date(trade.closedAt).toLocaleTimeString()}
-      </Text>
+
+      {trade.closedAt && (
+        <Text style={[styles.dateText, { color: colors.textMuted }]}>
+          {new Date(trade.closedAt).toLocaleDateString()} {new Date(trade.closedAt).toLocaleTimeString()}
+        </Text>
+      )}
     </View>
   );
 
@@ -496,7 +463,7 @@ const OrderBookScreen = ({ navigation }) => {
       </View>
 
       {/* Account Selector */}
-      <TouchableOpacity 
+      <TouchableOpacity
         style={[styles.accountSelector, { backgroundColor: colors.bgCard, borderColor: colors.border }]}
         onPress={() => setShowAccountPicker(!showAccountPicker)}
       >
@@ -507,62 +474,27 @@ const OrderBookScreen = ({ navigation }) => {
 
       {showAccountPicker && (
         <View style={[styles.accountPickerDropdown, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.accountOption, { borderBottomColor: colors.border }, selectedAccount === 'all' && styles.accountOptionActive]}
             onPress={() => { setSelectedAccount('all'); setShowAccountPicker(false); }}
           >
             <Text style={[styles.accountOptionText, { color: colors.textPrimary }]}>All Accounts</Text>
           </TouchableOpacity>
-          
-          {/* Regular Trading Accounts */}
-          {accounts.length > 0 && (
-            <Text style={[styles.accountSectionLabel, { color: colors.textMuted }]}>Trading Accounts</Text>
-          )}
           {accounts.map(acc => (
-            <TouchableOpacity 
+            <TouchableOpacity
               key={acc._id}
               style={[styles.accountOption, { borderBottomColor: colors.border }, selectedAccount === acc._id && styles.accountOptionActive]}
               onPress={() => { setSelectedAccount(acc._id); setShowAccountPicker(false); }}
             >
-              <Text style={[styles.accountOptionText, { color: colors.textPrimary }]}>{acc.accountId} - ${acc.balance?.toFixed(2) || '0.00'}</Text>
+              <Text style={[styles.accountOptionText, { color: colors.textPrimary }]}>{acc.accountId} - ${(acc.balance || 0).toFixed(2)}</Text>
             </TouchableOpacity>
           ))}
-          
-          {/* Challenge Accounts */}
-          {challengeAccounts.length > 0 && (
-            <>
-              <Text style={[styles.accountSectionLabel, { color: colors.textMuted, marginTop: 8 }]}>Challenge Accounts</Text>
-              {challengeAccounts.map(acc => (
-                <TouchableOpacity 
-                  key={acc._id}
-                  style={[styles.accountOption, { borderBottomColor: colors.border, borderLeftWidth: 3, borderLeftColor: '#dc2626' }, selectedAccount === `challenge_${acc._id}` && styles.accountOptionActive]}
-                  onPress={() => { setSelectedAccount(`challenge_${acc._id}`); setShowAccountPicker(false); }}
-                >
-                  <Text style={[styles.accountOptionText, { color: colors.textPrimary }]}>
-                    <Text style={{ color: '#dc2626' }}>🏆 </Text>
-                    {acc.accountId} - ${acc.balance?.toFixed(2) || '0.00'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </>
-          )}
-          
-          {accounts.length === 0 && challengeAccounts.length === 0 && accountsFetched && (
-            <View style={[styles.accountOption, { borderBottomColor: colors.border }]}>
-              <Text style={[styles.accountOptionText, { color: colors.textMuted }]}>No accounts available</Text>
-            </View>
-          )}
-          {accounts.length === 0 && challengeAccounts.length === 0 && !accountsFetched && (
-            <View style={[styles.accountOption, { borderBottomColor: colors.border }]}>
-              <Text style={[styles.accountOptionText, { color: colors.textMuted }]}>Loading accounts...</Text>
-            </View>
-          )}
         </View>
       )}
 
       {/* Tabs */}
       <View style={[styles.tabsContainer, { backgroundColor: colors.bgSecondary }]}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={[styles.tab, activeTab === 'positions' && styles.tabActive]}
           onPress={() => setActiveTab('positions')}
         >
@@ -570,7 +502,7 @@ const OrderBookScreen = ({ navigation }) => {
             Positions ({openTrades.length})
           </Text>
         </TouchableOpacity>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={[styles.tab, activeTab === 'pending' && styles.tabActive]}
           onPress={() => setActiveTab('pending')}
         >
@@ -578,7 +510,7 @@ const OrderBookScreen = ({ navigation }) => {
             Pending ({pendingOrders.length})
           </Text>
         </TouchableOpacity>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={[styles.tab, activeTab === 'history' && styles.tabActive]}
           onPress={() => setActiveTab('history')}
         >
@@ -634,7 +566,7 @@ const OrderBookScreen = ({ navigation }) => {
             {activeTab === 'history' && (
               <>
                 {/* History Filter Buttons */}
-                <View style={[styles.historyFilters, { backgroundColor: colors.bgSecondary, borderBottomColor: colors.border }]}>
+                <View style={[styles.historyFilters, { backgroundColor: colors.bgSecondary }]}>
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.historyFiltersContent}>
                     {[
                       { key: 'all', label: 'All' },
@@ -645,25 +577,19 @@ const OrderBookScreen = ({ navigation }) => {
                     ].map(filter => (
                       <TouchableOpacity
                         key={filter.key}
-                        style={[
-                          styles.historyFilterBtn,
-                          { backgroundColor: historyFilter === filter.key ? '#22c55e' : colors.bgCard }
-                        ]}
+                        style={[styles.historyFilterBtn, { backgroundColor: historyFilter === filter.key ? '#22c55e' : colors.bgCard }]}
                         onPress={() => setHistoryFilter(filter.key)}
                       >
-                        <Text style={[
-                          styles.historyFilterText,
-                          { color: historyFilter === filter.key ? '#000' : colors.textMuted }
-                        ]}>
+                        <Text style={[styles.historyFilterText, { color: historyFilter === filter.key ? '#000' : colors.textMuted }]}>
                           {filter.label}
                         </Text>
                       </TouchableOpacity>
                     ))}
                   </ScrollView>
                 </View>
-                
+
                 {/* History Summary */}
-                <View style={[styles.historySummary, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}>
+                <View style={[styles.historySummary, { backgroundColor: colors.bgCard }]}>
                   <Text style={[styles.historySummaryText, { color: colors.textMuted }]}>
                     {getFilteredHistory().length} trades
                   </Text>
@@ -687,228 +613,76 @@ const OrderBookScreen = ({ navigation }) => {
             )}
           </>
         )}
+        <View style={{ height: 100 }} />
       </ScrollView>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  centered: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+  container: { flex: 1 },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 50,
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#000000',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingTop: 50, paddingHorizontal: 16, paddingBottom: 16,
   },
-  backBtn: {
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerTitle: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '600',
-  },
-  refreshBtn: {
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+  backBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+  headerTitle: { fontSize: 18, fontWeight: '600' },
+  refreshBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
   accountSelector: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 12,
-    marginHorizontal: 16,
-    marginTop: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    zIndex: 101,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    paddingVertical: 12, marginHorizontal: 16, marginTop: 12, borderRadius: 10, borderWidth: 1, zIndex: 101,
   },
-  accountSelectorText: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
+  accountSelectorText: { fontSize: 14, fontWeight: '500' },
   accountPickerDropdown: {
-    marginHorizontal: 16,
-    marginTop: 4,
-    borderRadius: 10,
-    borderWidth: 1,
-    overflow: 'hidden',
-    zIndex: 100,
-    elevation: 5,
+    marginHorizontal: 16, marginTop: 4, borderRadius: 10, borderWidth: 1,
+    overflow: 'hidden', zIndex: 100, elevation: 5,
   },
-  accountOption: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-  },
-  accountOptionActive: {
-    backgroundColor: '#dc262620',
-  },
-  accountOptionText: {
-    fontSize: 14,
-  },
-  accountSectionLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 4,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
+  accountOption: { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: 1 },
+  accountOptionActive: { backgroundColor: '#2563EB20' },
+  accountOptionText: { fontSize: 14 },
   tabsContainer: {
-    flexDirection: 'row',
-    marginHorizontal: 16,
-    marginTop: 12,
-    borderRadius: 10,
-    padding: 4,
+    flexDirection: 'row', marginHorizontal: 16, marginTop: 12, borderRadius: 10, padding: 4,
   },
-  tab: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: 'center',
-    borderRadius: 8,
-  },
-  tabActive: {
-    backgroundColor: '#dc2626',
-  },
-  tabText: {
-    color: '#666',
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  tabTextActive: {
-    color: '#000',
-  },
+  tab: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
+  tabActive: { backgroundColor: '#2563EB' },
+  tabText: { fontSize: 13, fontWeight: '500' },
+  tabTextActive: { color: '#fff' },
   summaryBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginHorizontal: 16,
-    marginTop: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 10,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginHorizontal: 16, marginTop: 8, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10,
   },
-  summaryLabel: {
-    color: '#666',
-    fontSize: 14,
-  },
-  summaryValue: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  content: {
-    flex: 1,
-    padding: 16,
-  },
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginTop: 16,
-  },
-  emptyText: {
-    color: '#666',
-    fontSize: 14,
-    marginTop: 8,
-  },
-  tradeCard: {
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-  },
-  tradeHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  tradeSymbolRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  tradeSymbol: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  sideBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  sideText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  accountLabel: {
-    color: '#666',
-    fontSize: 12,
-  },
-  tradeDetails: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-  detailRow: {
-    width: '48%',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  detailLabel: {
-    color: '#666',
-    fontSize: 13,
-  },
-  detailValue: {
-    fontSize: 13,
-  },
-  closeBtn: {
-    backgroundColor: '#dc262620',
-    paddingVertical: 10,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  closeBtnText: {
-    color: '#dc2626',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  dateText: {
-    color: '#666',
-    fontSize: 12,
-    textAlign: 'right',
-  },
-  // History Filters
-  historyFilters: { paddingVertical: 8, borderBottomWidth: 1 },
-  historyFiltersContent: { paddingHorizontal: 12, gap: 8, flexDirection: 'row' },
-  historyFilterBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16 },
+  summaryLabel: { fontSize: 13 },
+  summaryValue: { fontSize: 16, fontWeight: '700' },
+  content: { flex: 1, paddingHorizontal: 16, paddingTop: 12 },
+  tradeCard: { borderRadius: 14, padding: 16, marginBottom: 10, borderWidth: 1 },
+  tradeHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  tradeSymbolRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  tradeSymbol: { fontSize: 16, fontWeight: '600' },
+  sideBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  sideText: { fontSize: 11, fontWeight: '600' },
+  accountLabel: { fontSize: 11 },
+  tradeDetails: { flexDirection: 'row', flexWrap: 'wrap', gap: 0, marginBottom: 12 },
+  detailRow: { width: '50%', marginBottom: 8 },
+  detailLabel: { fontSize: 11, marginBottom: 2 },
+  detailValue: { fontSize: 14, fontWeight: '500' },
+  slTpRow: { flexDirection: 'row', gap: 16, marginBottom: 10, paddingTop: 4, borderTopWidth: 1, borderTopColor: '#ffffff10' },
+  slTpText: { fontSize: 12, fontWeight: '500' },
+  closeBtn: { backgroundColor: '#2563EB20', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  closeBtnText: { color: '#2563EB', fontSize: 13, fontWeight: '600' },
+  emptyState: { alignItems: 'center', paddingVertical: 60 },
+  emptyTitle: { fontSize: 16, fontWeight: '600', marginTop: 12 },
+  emptyText: { fontSize: 13, marginTop: 6 },
+  dateText: { fontSize: 11, textAlign: 'right', marginTop: 4 },
+  historyFilters: { borderRadius: 8, paddingVertical: 8, marginBottom: 8 },
+  historyFiltersContent: { paddingHorizontal: 4, gap: 6 },
+  historyFilterBtn: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 8 },
   historyFilterText: { fontSize: 12, fontWeight: '500' },
-  historySummary: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1 },
-  historySummaryText: { fontSize: 12 },
+  historySummary: {
+    flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 14,
+    paddingVertical: 10, borderRadius: 8, marginBottom: 8,
+  },
+  historySummaryText: { fontSize: 13 },
 });
 
 export default OrderBookScreen;

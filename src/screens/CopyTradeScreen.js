@@ -111,14 +111,14 @@ const CopyTradeScreen = ({ navigation }) => {
   const fetchMasters = async () => {
     setLoadingMasters(true);
     try {
-      console.log('CopyTradeScreen - Fetching masters from:', `${API_URL}/copy/masters`);
-      const res = await fetch(`${API_URL}/copy/masters`);
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/social/masters`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) { setMasters([]); setLoadingMasters(false); return; }
       const data = await res.json();
-      console.log('CopyTradeScreen - Masters response:', JSON.stringify(data));
-      // Handle both array response and object with masters property
-      const mastersList = Array.isArray(data) ? data : (data.masters || []);
-      console.log('CopyTradeScreen - Setting masters:', mastersList.length);
-      setMasters(mastersList);
+      const mastersList = data.items || data.masters || data || [];
+      setMasters(Array.isArray(mastersList) ? mastersList : []);
     } catch (e) {
       console.warn('Error fetching masters:', e.message);
     }
@@ -126,36 +126,54 @@ const CopyTradeScreen = ({ navigation }) => {
   };
 
   const fetchMySubscriptions = async () => {
-    if (!user?._id) return;
     try {
-      const res = await fetch(`${API_URL}/copy/my-subscriptions/${user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      if (!token) return;
+      const res = await fetch(`${API_URL}/social/subscriptions`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) { setMySubscriptions([]); return; }
       const data = await res.json();
-      setMySubscriptions(data.subscriptions || []);
+      setMySubscriptions(data.items || data.subscriptions || data || []);
     } catch (e) {
       console.error('Error fetching subscriptions:', e);
     }
   };
 
   const fetchMyCopyTrades = async () => {
-    if (!user?._id) return;
     try {
-      const res = await fetch(`${API_URL}/copy/my-copy-trades/${user._id}?limit=50`);
+      const token = await SecureStore.getItemAsync('token');
+      if (!token) return;
+      const res = await fetch(`${API_URL}/portfolio/trades?per_page=50`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) { setMyCopyTrades([]); return; }
       const data = await res.json();
-      setMyCopyTrades(data.copyTrades || []);
+      setMyCopyTrades(data.items || data || []);
     } catch (e) {
       console.error('Error fetching copy trades:', e);
     }
   };
 
   const fetchAccounts = async () => {
-    if (!user?._id) return;
     try {
-      const res = await fetch(`${API_URL}/trading-accounts/user/${user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      if (!token) return;
+      const res = await fetch(`${API_URL}/accounts`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) { setAccounts([]); return; }
       const data = await res.json();
-      setAccounts(data.accounts || []);
-      if (data.accounts?.length > 0 && !selectedAccount) {
-        setSelectedAccount(data.accounts[0]._id);
-        setMasterForm(prev => ({ ...prev, tradingAccountId: data.accounts[0]._id }));
+      const items = data.items || data || [];
+      const mapped = items.map(a => ({
+        ...a,
+        _id: a.id || a._id,
+        accountId: a.account_number || a.accountId || a.id,
+      }));
+      setAccounts(mapped);
+      if (mapped.length > 0 && !selectedAccount) {
+        setSelectedAccount(mapped[0]._id);
+        setMasterForm(prev => ({ ...prev, tradingAccountId: mapped[0]._id }));
       }
     } catch (e) {
       console.error('Error fetching accounts:', e);
@@ -163,12 +181,16 @@ const CopyTradeScreen = ({ navigation }) => {
   };
 
   const fetchMyMasterProfile = async () => {
-    if (!user?._id) return;
     try {
-      const res = await fetch(`${API_URL}/copy/master/my-profile/${user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      if (!token) return;
+      const res = await fetch(`${API_URL}/social/my-provider`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) return;
       const data = await res.json();
-      if (data.master) {
-        setMyMasterProfile(data.master);
+      if (data && (data.id || data._id)) {
+        setMyMasterProfile({ ...data, _id: data.id || data._id });
       }
     } catch (e) {
       // User is not a master - that's okay
@@ -176,14 +198,8 @@ const CopyTradeScreen = ({ navigation }) => {
   };
 
   const fetchMyFollowers = async () => {
-    if (!myMasterProfile?._id) return;
-    try {
-      const res = await fetch(`${API_URL}/copy/my-followers/${myMasterProfile._id}`);
-      const data = await res.json();
-      setMyFollowers(data.followers || []);
-    } catch (e) {
-      console.error('Error fetching followers:', e);
-    }
+    // PTD2 doesn't have a dedicated followers endpoint
+    setMyFollowers([]);
   };
 
   const handleApplyMaster = async () => {
@@ -200,25 +216,25 @@ const CopyTradeScreen = ({ navigation }) => {
 
     setApplyingMaster(true);
     try {
-      const res = await fetch(`${API_URL}/copy/master/apply`, {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/social/become-provider`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          userId: user._id,
-          displayName: masterForm.displayName,
+          display_name: masterForm.displayName,
           description: masterForm.description,
-          tradingAccountId: accountId,
-          requestedCommissionPercentage: parseFloat(masterForm.requestedCommissionPercentage) || 10
+          account_id: accountId,
+          commission_percentage: parseFloat(masterForm.requestedCommissionPercentage) || 10
         })
       });
 
       const data = await res.json();
-      if (data.master) {
+      if (res.ok) {
         Alert.alert('Success', 'Application submitted! Please wait for admin approval.');
         setShowMasterModal(false);
         fetchMyMasterProfile();
       } else {
-        Alert.alert('Error', data.message || 'Failed to submit application');
+        Alert.alert('Error', data.detail || data.message || 'Failed to submit application');
       }
     } catch (e) {
       Alert.alert('Error', 'Failed to submit application');
@@ -234,27 +250,27 @@ const CopyTradeScreen = ({ navigation }) => {
 
     setIsSubmitting(true);
     try {
-      const res = await fetch(`${API_URL}/copy/follow`, {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/social/follow`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          followerUserId: user._id,
-          masterId: selectedMaster._id,
-          followerAccountId: selectedAccount,
-          copyMode,
-          copyValue: parseFloat(copyValue)
+          provider_id: selectedMaster.id || selectedMaster._id,
+          account_id: selectedAccount,
+          copy_mode: copyMode === 'FIXED_LOT' ? 'fixed_lot' : 'multiplier',
+          fixed_lot_size: parseFloat(copyValue) || 0.01
         })
       });
 
       const data = await res.json();
-      if (data.follower) {
+      if (res.ok) {
         Alert.alert('Success', 'Successfully following master trader!');
         setShowFollowModal(false);
         setSelectedMaster(null);
         fetchMySubscriptions();
         fetchMasters();
       } else {
-        Alert.alert('Error', data.message || 'Failed to follow');
+        Alert.alert('Error', data.detail || data.message || 'Failed to follow');
       }
     } catch (e) {
       Alert.alert('Error', 'Failed to follow master');
@@ -263,18 +279,8 @@ const CopyTradeScreen = ({ navigation }) => {
   };
 
   const handlePauseResume = async (subscriptionId, currentStatus) => {
-    const action = currentStatus === 'ACTIVE' ? 'pause' : 'resume';
-    try {
-      const res = await fetch(`${API_URL}/copy/follow/${subscriptionId}/${action}`, {
-        method: 'PUT'
-      });
-      const data = await res.json();
-      if (data.follower) {
-        fetchMySubscriptions();
-      }
-    } catch (e) {
-      Alert.alert('Error', 'Failed to update subscription');
-    }
+    // PTD2 doesn't have pause/resume endpoint for subscriptions
+    Alert.alert('Info', 'Pause/resume is not available on this platform. Please unfollow and follow again if needed.');
   };
 
   const handleUnfollow = async (subscriptionId) => {
@@ -288,16 +294,18 @@ const CopyTradeScreen = ({ navigation }) => {
           style: 'destructive',
           onPress: async () => {
             try {
-              const res = await fetch(`${API_URL}/copy/follow/${subscriptionId}/unfollow`, {
-                method: 'DELETE'
+              const token = await SecureStore.getItemAsync('token');
+              const res = await fetch(`${API_URL}/social/unfollow/${subscriptionId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
               });
-              const data = await res.json();
-              if (data.success) {
+              if (res.ok) {
                 Alert.alert('Success', 'Successfully unfollowed master');
                 fetchMySubscriptions();
                 fetchMasters();
               } else {
-                Alert.alert('Error', data.message || 'Failed to unfollow');
+                const data = await res.json().catch(() => ({}));
+                Alert.alert('Error', data.detail || data.message || 'Failed to unfollow');
               }
             } catch (e) {
               Alert.alert('Error', 'Failed to unfollow');
@@ -320,23 +328,10 @@ const CopyTradeScreen = ({ navigation }) => {
 
     setIsSubmitting(true);
     try {
-      const res = await fetch(`${API_URL}/copy/follow/${editingSubscription._id}/update`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          copyMode: editCopyMode,
-          copyValue: parseFloat(editCopyValue)
-        })
-      });
-      const data = await res.json();
-      if (data.success || data.follower) {
-        Alert.alert('Success', 'Subscription updated successfully!');
-        setShowEditModal(false);
-        setEditingSubscription(null);
-        fetchMySubscriptions();
-      } else {
-        Alert.alert('Error', data.message || 'Failed to update subscription');
-      }
+      // PTD2 doesn't have subscription update endpoint
+      Alert.alert('Info', 'Subscription editing is not available on this platform. Please unfollow and follow again with new settings.');
+      setShowEditModal(false);
+      setEditingSubscription(null);
     } catch (e) {
       Alert.alert('Error', 'Failed to update subscription');
     }
@@ -348,7 +343,10 @@ const CopyTradeScreen = ({ navigation }) => {
   );
 
   const isFollowingMaster = (masterId) => {
-    return mySubscriptions.some(sub => sub.masterId?._id === masterId || sub.masterId === masterId);
+    return mySubscriptions.some(sub => {
+      const subMasterId = sub.masterTraderId?.id || sub.masterTraderId?._id || sub.masterTraderId || sub.provider_id;
+      return subMasterId === masterId && (sub.status === 'ACTIVE' || sub.status === 'active');
+    });
   };
 
   const getCopyModeLabel = (mode, value) => {
@@ -369,7 +367,7 @@ const CopyTradeScreen = ({ navigation }) => {
     );
   }
 
-  const tabs = ['discover', 'subscriptions', 'trades'];
+  const tabs = ['discover', 'subscriptions'];
   if (myMasterProfile?.status === 'ACTIVE') {
     tabs.push('followers');
   }
@@ -593,7 +591,7 @@ const CopyTradeScreen = ({ navigation }) => {
                     <View style={styles.subStatBox}>
                       <Text style={[styles.subStatLabel, { color: colors.textMuted }]}>Open / Closed</Text>
                       <Text style={styles.subStatValue}>
-                        <Text style={{ color: '#dc2626' }}>{sub.stats?.openTrades || 0}</Text>
+                        <Text style={{ color: '#2563EB' }}>{sub.stats?.openTrades || 0}</Text>
                         {' / '}
                         <Text style={{ color: '#888' }}>{sub.stats?.closedTrades || 0}</Text>
                       </Text>
@@ -672,8 +670,8 @@ const CopyTradeScreen = ({ navigation }) => {
                       </Text>
                     </View>
                   </View>
-                  <View style={[styles.tradeStatusBadge, { backgroundColor: trade.status === 'OPEN' ? '#dc262620' : '#22c55e20' }]}>
-                    <Text style={[styles.tradeStatusText, { color: trade.status === 'OPEN' ? '#dc2626' : '#22c55e' }]}>{trade.status}</Text>
+                  <View style={[styles.tradeStatusBadge, { backgroundColor: trade.status === 'OPEN' ? '#2563EB20' : '#22c55e20' }]}>
+                    <Text style={[styles.tradeStatusText, { color: trade.status === 'OPEN' ? '#2563EB' : '#22c55e' }]}>{trade.status}</Text>
                   </View>
                 </View>
               ))
@@ -940,14 +938,14 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 18, fontWeight: 'bold' },
   
   // Master Banner
-  masterBanner: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 12, padding: 16, backgroundColor: '#dc262620', borderRadius: 16, borderWidth: 1, borderColor: '#dc262650' },
+  masterBanner: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 12, padding: 16, backgroundColor: '#2563EB20', borderRadius: 16, borderWidth: 1, borderColor: '#2563EB50' },
   masterStatusBanner: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 12, padding: 16, borderRadius: 16, borderWidth: 1 },
-  masterBannerIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#dc262630', justifyContent: 'center', alignItems: 'center' },
+  masterBannerIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#2563EB30', justifyContent: 'center', alignItems: 'center' },
   masterBannerText: { flex: 1, marginLeft: 12 },
   masterBannerTitle: { fontSize: 15, fontWeight: '600' },
   masterBannerSub: { color: '#888', fontSize: 12, marginTop: 2 },
   commissionText: { fontSize: 16, fontWeight: 'bold' },
-  applyBtn: { backgroundColor: '#dc2626', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
+  applyBtn: { backgroundColor: '#2563EB', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
   applyBtnText: { color: '#000', fontSize: 13, fontWeight: '600' },
   
   // Status Banners
@@ -966,7 +964,7 @@ const styles = StyleSheet.create({
   tabsScroll: { maxHeight: 50, marginBottom: 8 },
   tabs: { flexDirection: 'row', paddingHorizontal: 16, gap: 8 },
   tab: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10 },
-  tabActive: { backgroundColor: '#dc2626' },
+  tabActive: { backgroundColor: '#2563EB' },
   tabText: { color: '#666', fontSize: 13, fontWeight: '500' },
   tabTextActive: { color: '#000' },
   
@@ -981,13 +979,13 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 20, fontWeight: '600', marginTop: 16 },
   emptyText: { color: '#666', fontSize: 14, marginTop: 8, textAlign: 'center' },
   discoverBtn: { marginTop: 16 },
-  discoverBtnText: { color: '#dc2626', fontSize: 14, fontWeight: '600' },
+  discoverBtnText: { color: '#2563EB', fontSize: 14, fontWeight: '600' },
   
   // Master Card
   masterCard: { borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1 },
   masterHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  masterAvatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: '#dc262630', justifyContent: 'center', alignItems: 'center' },
-  avatarText: { color: '#dc2626', fontSize: 18, fontWeight: 'bold' },
+  masterAvatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: '#2563EB30', justifyContent: 'center', alignItems: 'center' },
+  avatarText: { color: '#2563EB', fontSize: 18, fontWeight: 'bold' },
   masterInfo: { flex: 1, marginLeft: 12 },
   masterName: { fontSize: 16, fontWeight: '600' },
   masterFollowers: { color: '#666', fontSize: 12, marginTop: 2 },
@@ -1001,7 +999,7 @@ const styles = StyleSheet.create({
   statBoxValue: { fontSize: 16, fontWeight: '600', marginTop: 4 },
   
   // Follow Button
-  followBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#dc2626', paddingVertical: 12, borderRadius: 10 },
+  followBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#2563EB', paddingVertical: 12, borderRadius: 10 },
   followBtnText: { color: '#000', fontSize: 14, fontWeight: '600' },
   followingBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#22c55e20', paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: '#22c55e50' },
   followingBtnText: { color: '#22c55e', fontSize: 14, fontWeight: '600' },
@@ -1029,7 +1027,7 @@ const styles = StyleSheet.create({
   
   // Sub Actions
   subActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 12 },
-  editBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: '#dc262620', justifyContent: 'center', alignItems: 'center' },
+  editBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: '#2563EB20', justifyContent: 'center', alignItems: 'center' },
   pauseBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: '#eab30820', justifyContent: 'center', alignItems: 'center' },
   unfollowBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: '#ef444420', justifyContent: 'center', alignItems: 'center' },
   
@@ -1067,21 +1065,21 @@ const styles = StyleSheet.create({
   inputLabel: { color: '#888', fontSize: 12, marginBottom: 8, marginTop: 16 },
   accountsScroll: { marginBottom: 8 },
   accountCard: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, marginRight: 8, minWidth: 120, borderWidth: 1 },
-  accountCardActive: { backgroundColor: '#dc2626', borderColor: '#dc2626' },
+  accountCardActive: { backgroundColor: '#2563EB', borderColor: '#2563EB' },
   accountNumber: { fontSize: 14, fontWeight: '600' },
   accountBalance: { color: '#666', fontSize: 12, marginTop: 4 },
   
   // Copy Mode
   copyModeRow: { flexDirection: 'row', gap: 8 },
   copyModeBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center', borderWidth: 1 },
-  copyModeBtnActive: { backgroundColor: '#dc262620', borderColor: '#dc2626' },
+  copyModeBtnActive: { backgroundColor: '#2563EB20', borderColor: '#2563EB' },
   copyModeText: { color: '#666', fontSize: 13, fontWeight: '500' },
-  copyModeTextActive: { color: '#dc2626' },
+  copyModeTextActive: { color: '#2563EB' },
   
   input: { borderRadius: 12, padding: 16, fontSize: 16, borderWidth: 1 },
   inputHint: { color: '#666', fontSize: 12, marginTop: 8 },
   
-  submitBtn: { backgroundColor: '#dc2626', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 24 },
+  submitBtn: { backgroundColor: '#2563EB', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 24 },
   submitBtnDisabled: { opacity: 0.6 },
   submitBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
 });

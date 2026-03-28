@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
-import { API_URL } from '../config/api';
+import { API_URL } from '../config';
 import { useTheme } from '../context/ThemeContext';
 
 const AccountsScreen = ({ navigation, route }) => {
@@ -126,9 +126,13 @@ const AccountsScreen = ({ navigation, route }) => {
 
   const fetchWalletBalance = async () => {
     try {
-      const res = await fetch(`${API_URL}/wallet/${user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      if (!token) return;
+      const res = await fetch(`${API_URL}/wallet/summary`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
-      setWalletBalance(data.wallet?.balance || 0);
+      setWalletBalance(data.balance || 0);
     } catch (e) {
       console.error('Error fetching wallet:', e);
     }
@@ -150,10 +154,9 @@ const AccountsScreen = ({ navigation, route }) => {
   const fetchChallengeAccounts = async () => {
     if (!user) return;
     try {
-      const res = await fetch(`${API_URL}/prop/my-accounts/${user._id}`);
-      const data = await res.json();
-      console.log('AccountsScreen - Fetched challenge accounts:', data.accounts?.length);
-      setChallengeAccounts(data.accounts || []);
+      const token = await SecureStore.getItemAsync('token');
+      // PTD2 doesn't have prop challenge endpoints yet - safely skip
+      setChallengeAccounts([]);
     } catch (e) {
       console.error('Error fetching challenge accounts:', e);
     }
@@ -161,88 +164,42 @@ const AccountsScreen = ({ navigation, route }) => {
 
   // Fetch challenge status separately (like web version)
   const fetchChallengeStatus = async () => {
-    try {
-      const res = await fetch(`${API_URL}/prop/status`);
-      const data = await res.json();
-      console.log('AccountsScreen - Challenge status:', data.enabled);
-      if (data.success) {
-        setChallengeModeEnabled(data.enabled);
-      }
-    } catch (e) {
-      console.error('Error fetching challenge status:', e);
-    }
+    // PTD2 doesn't have prop challenge system yet
+    setChallengeModeEnabled(false);
   };
 
   const fetchAvailableChallenges = async () => {
-    try {
-      const res = await fetch(`${API_URL}/prop/challenges`);
-      const data = await res.json();
-      console.log('AccountsScreen - Fetched available challenges:', data.challenges?.length, 'enabled:', data.enabled);
-      setAvailableChallenges(data.challenges || []);
-      // Also update challenge mode from this endpoint as backup
-      if (data.enabled !== undefined) {
-        setChallengeModeEnabled(data.enabled);
-      }
-    } catch (e) {
-      console.error('Error fetching available challenges:', e);
-    }
+    // PTD2 doesn't have prop challenges endpoint
+    setAvailableChallenges([]);
+    setChallengeModeEnabled(false);
   };
 
   const buyChallenge = async (challenge) => {
-    if (buyingChallenge) return;
-    
-    const challengeFee = challenge.challengeFee || 0;
-    if (walletBalance < challengeFee) {
-      Alert.alert('Insufficient Balance', `You need $${challengeFee} to purchase this challenge. Your wallet balance is $${walletBalance.toFixed(2)}.`);
-      return;
-    }
-
-    Alert.alert(
-      'Confirm Purchase',
-      `Purchase ${challenge.name} for $${challengeFee}?\n\nFund Size: $${(challenge.fundSize || 0).toLocaleString()}\nYour wallet balance: $${walletBalance.toFixed(2)}`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Buy Challenge', 
-          onPress: async () => {
-            setBuyingChallenge(true);
-            try {
-              const res = await fetch(`${API_URL}/prop/buy`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  userId: user._id,
-                  challengeId: challenge._id
-                })
-              });
-              const data = await res.json();
-              if (data.success) {
-                Alert.alert('Success', `Challenge purchased! Account ID: ${data.account?.accountId}`);
-                setShowBuyChallengeModal(false);
-                fetchChallengeAccounts();
-                fetchWalletBalance();
-              } else {
-                Alert.alert('Error', data.message || 'Failed to purchase challenge');
-              }
-            } catch (e) {
-              Alert.alert('Error', 'Network error: ' + e.message);
-            } finally {
-              setBuyingChallenge(false);
-            }
-          }
-        }
-      ]
-    );
+    // PTD2 doesn't have prop challenge buying endpoint
+    Alert.alert('Info', 'Challenge purchasing is not available on this platform.');
   };
 
   const fetchAccounts = async () => {
     if (!user) return;
     try {
-      console.log('AccountsScreen - Fetching accounts for user:', user._id);
-      const res = await fetch(`${API_URL}/trading-accounts/user/${user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      console.log('AccountsScreen - Fetching accounts with token auth');
+      const res = await fetch(`${API_URL}/accounts`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
-      console.log('AccountsScreen - Accounts response:', data.accounts?.length || 0, 'accounts');
-      setAccounts(data.accounts || []);
+      const items = data.items || data || [];
+      // Map PTD2 account fields to expected format
+      const mappedAccounts = items.map(a => ({
+        ...a,
+        _id: a.id || a._id,
+        accountId: a.account_number || a.accountId || a.id,
+        isDemo: a.is_demo || a.isDemo || false,
+        status: a.status === 'active' ? 'Active' : (a.status || 'Active'),
+        accountType: a.account_type || a.accountType || 'Standard',
+      }));
+      console.log('AccountsScreen - Accounts response:', mappedAccounts.length, 'accounts');
+      setAccounts(mappedAccounts);
     } catch (e) {
       console.warn('AccountsScreen - Error fetching accounts:', e.message);
     }
@@ -277,7 +234,7 @@ const AccountsScreen = ({ navigation, route }) => {
     setShowAccountTransferModal(true);
   };
 
-  // Transfer from wallet to account
+  // Transfer from wallet to account - PTD2 uses wallet deposit
   const handleTransferFunds = async () => {
     if (!selectedAccount || !selectedAccount._id) {
       Alert.alert('Error', 'No account selected');
@@ -294,34 +251,26 @@ const AccountsScreen = ({ navigation, route }) => {
 
     setIsTransferring(true);
     try {
-      console.log('Transfer request:', {
-        url: `${API_URL}/trading-accounts/${selectedAccount._id}/transfer`,
-        userId: user._id,
-        amount: parseFloat(transferAmount),
-        direction: 'deposit'
-      });
-      
-      const res = await fetch(`${API_URL}/trading-accounts/${selectedAccount._id}/transfer`, {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/wallet/deposit`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          userId: user._id,
+          account_id: selectedAccount.id || selectedAccount._id,
           amount: parseFloat(transferAmount),
-          direction: 'deposit',
+          method: 'internal_transfer',
         })
       });
       const data = await res.json();
-      console.log('Transfer response:', res.status, data);
       
       if (res.ok) {
-        // Fetch updated data first, then close modal
         await Promise.all([fetchAccounts(), fetchWalletBalance()]);
         setShowTransferModal(false);
         setTransferAmount('');
         setSelectedAccount(null);
         Alert.alert('Success', 'Funds transferred successfully!');
       } else {
-        Alert.alert('Error', data.message || 'Transfer failed');
+        Alert.alert('Error', data.detail || data.message || 'Transfer failed');
       }
     } catch (e) {
       console.error('Transfer error:', e);
@@ -330,7 +279,7 @@ const AccountsScreen = ({ navigation, route }) => {
     setIsTransferring(false);
   };
 
-  // Withdraw from account to wallet
+  // Withdraw from account to wallet - PTD2 uses wallet withdraw
   const handleWithdrawFromAccount = async () => {
     if (!transferAmount || parseFloat(transferAmount) <= 0) {
       Alert.alert('Error', 'Please enter a valid amount');
@@ -347,26 +296,26 @@ const AccountsScreen = ({ navigation, route }) => {
 
     setIsTransferring(true);
     try {
-      const res = await fetch(`${API_URL}/trading-accounts/${selectedAccount._id}/transfer`, {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/wallet/withdraw`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          userId: user._id,
+          account_id: selectedAccount.id || selectedAccount._id,
           amount: parseFloat(transferAmount),
-          direction: 'withdraw',
+          method: 'internal_transfer',
         })
       });
       const data = await res.json();
       
       if (res.ok) {
-        // Fetch updated data first, then close modal
         await Promise.all([fetchAccounts(), fetchWalletBalance()]);
         setShowWithdrawModal(false);
         setTransferAmount('');
         setSelectedAccount(null);
         Alert.alert('Success', 'Funds withdrawn to main wallet!');
       } else {
-        Alert.alert('Error', data.message || 'Withdrawal failed');
+        Alert.alert('Error', data.detail || data.message || 'Withdrawal failed');
       }
     } catch (e) {
       Alert.alert('Error', 'Error withdrawing funds');
@@ -400,6 +349,7 @@ const AccountsScreen = ({ navigation, route }) => {
 
     setIsTransferring(true);
     try {
+      const token = await SecureStore.getItemAsync('token');
       const bankAccountDetails = withdrawMethod === 'Bank' 
         ? {
             type: 'Bank',
@@ -415,12 +365,11 @@ const AccountsScreen = ({ navigation, route }) => {
 
       const res = await fetch(`${API_URL}/wallet/withdraw`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          userId: user._id,
           amount: parseFloat(transferAmount),
-          paymentMethod: withdrawMethod === 'Bank' ? 'Bank Transfer' : 'UPI',
-          bankAccountDetails,
+          method: withdrawMethod === 'Bank' ? 'bank' : 'upi',
+          bank_details: bankAccountDetails,
         })
       });
       const data = await res.json();
@@ -441,50 +390,9 @@ const AccountsScreen = ({ navigation, route }) => {
     setIsTransferring(false);
   };
 
-  // Transfer between accounts
+  // Transfer between accounts - PTD2 doesn't support direct account-to-account transfer
   const handleAccountToAccountTransfer = async () => {
-    if (!transferAmount || parseFloat(transferAmount) <= 0) {
-      Alert.alert('Error', 'Please enter a valid amount');
-      return;
-    }
-    if (!targetAccount) {
-      Alert.alert('Error', 'Please select a target account');
-      return;
-    }
-    if (parseFloat(transferAmount) > selectedAccount.balance) {
-      Alert.alert('Error', 'Insufficient account balance');
-      return;
-    }
-
-    setIsTransferring(true);
-    try {
-      const res = await fetch(`${API_URL}/trading-accounts/account-transfer`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: user._id,
-          fromAccountId: selectedAccount._id,
-          toAccountId: targetAccount._id,
-          amount: parseFloat(transferAmount),
-        })
-      });
-      const data = await res.json();
-      
-      if (res.ok) {
-        // Fetch updated data first, then close modal
-        await fetchAccounts();
-        setShowAccountTransferModal(false);
-        setTransferAmount('');
-        setSelectedAccount(null);
-        setTargetAccount(null);
-        Alert.alert('Success', `$${transferAmount} transferred successfully!`);
-      } else {
-        Alert.alert('Error', data.message || 'Transfer failed');
-      }
-    } catch (e) {
-      Alert.alert('Error', 'Error transferring funds');
-    }
-    setIsTransferring(false);
+    Alert.alert('Info', 'Account-to-account transfer is not available. Please withdraw to wallet first, then deposit to target account.');
   };
 
   const selectAccountForTrading = async (account) => {
@@ -502,31 +410,26 @@ const AccountsScreen = ({ navigation, route }) => {
     );
   }
 
-  // Fetch account types for opening new account
+  // Fetch account types - PTD2 uses /accounts POST directly
   const fetchAccountTypes = async () => {
     setLoadingAccountTypes(true);
-    setAccountTypes([]); // Clear previous data
+    setAccountTypes([]);
     
     try {
-      // Create a promise that rejects after 15 seconds
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('timeout')), 15000)
-      );
-      
-      const fetchPromise = fetch(`${API_URL}/account-types`);
-      
-      // Race between fetch and timeout
-      const res = await Promise.race([fetchPromise, timeoutPromise]);
-      const data = await res.json();
-      
-      if (data.success && data.accountTypes && data.accountTypes.length > 0) {
-        setAccountTypes(data.accountTypes);
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/accounts/types`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const types = data.items || data.account_types || data || [];
+        setAccountTypes(Array.isArray(types) ? types : []);
       } else {
-        setAccountTypes([]); // Will show "No account types" message
+        setAccountTypes([]);
       }
     } catch (e) {
       console.error('Error fetching account types:', e);
-      setAccountTypes([]); // Will show "No account types" message
+      setAccountTypes([]);
     }
     setLoadingAccountTypes(false);
   };
@@ -536,33 +439,23 @@ const AccountsScreen = ({ navigation, route }) => {
     
     setOpeningAccount(true);
     try {
-      console.log('Creating account with:', { userId: user._id, accountTypeId: accountType._id });
-      const res = await fetch(`${API_URL}/trading-accounts`, {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/accounts`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          userId: user._id,
-          accountTypeId: accountType._id
+          account_type_id: accountType.id || accountType._id,
+          is_demo: accountType.isDemo || false,
         })
       });
-      const text = await res.text();
-      console.log('Create account raw response:', text);
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (parseErr) {
-        console.error('Failed to parse response:', text);
-        Alert.alert('Error', 'Server error: ' + text.substring(0, 100));
-        return;
-      }
-      console.log('Create account response:', data);
-      if (data.success) {
-        Alert.alert('Success', `Account ${data.account?.accountId || ''} created successfully!`);
+      const data = await res.json();
+      if (res.ok) {
+        Alert.alert('Success', 'Account created successfully!');
         setShowOpenAccountModal(false);
         setSelectedAccountType(null);
         fetchAccounts();
       } else {
-        Alert.alert('Error', data.message || 'Failed to create account');
+        Alert.alert('Error', data.detail || data.message || 'Failed to create account');
       }
     } catch (e) {
       console.error('Error creating account:', e.message);
@@ -591,8 +484,8 @@ const AccountsScreen = ({ navigation, route }) => {
   const renderChallengeAccount = (account) => (
     <View key={account._id} style={[styles.accountCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
       <View style={styles.accountHeader}>
-        <View style={[styles.accountIconContainer, { backgroundColor: '#dc262620' }]}>
-          <Ionicons name="trophy-outline" size={24} color="#dc2626" />
+        <View style={[styles.accountIconContainer, { backgroundColor: '#2563EB20' }]}>
+          <Ionicons name="trophy-outline" size={24} color="#2563EB" />
         </View>
         <View style={styles.accountInfo}>
           <Text style={[styles.accountId, { color: colors.textPrimary }]}>{account.accountId}</Text>
@@ -644,7 +537,7 @@ const AccountsScreen = ({ navigation, route }) => {
 
       {account.status === 'ACTIVE' && (
         <TouchableOpacity 
-          style={[styles.tradeBtn, { backgroundColor: '#dc2626' }]}
+          style={[styles.tradeBtn, { backgroundColor: '#2563EB' }]}
           onPress={() => selectChallengeAccountForTrading(account)}
         >
           <Ionicons name="trending-up" size={18} color="#fff" />
@@ -657,9 +550,9 @@ const AccountsScreen = ({ navigation, route }) => {
   const getStatusColor = (status) => {
     switch (status) {
       case 'ACTIVE': return '#22c55e';
-      case 'PASSED': return '#dc2626';
+      case 'PASSED': return '#2563EB';
       case 'FAILED': return '#ef4444';
-      case 'FUNDED': return '#dc2626';
+      case 'FUNDED': return '#2563EB';
       default: return '#888';
     }
   };
@@ -815,16 +708,17 @@ const AccountsScreen = ({ navigation, route }) => {
                             { text: 'Cancel', style: 'cancel' },
                             { text: 'Reset', style: 'destructive', onPress: async () => {
                               try {
-                                const res = await fetch(`${API_URL}/trading-accounts/${account._id}/reset-demo`, {
+                                const token = await SecureStore.getItemAsync('token');
+                                const res = await fetch(`${API_URL}/accounts/${account.id || account._id}/reset`, {
                                   method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' }
+                                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
                                 });
                                 const data = await res.json();
-                                if (data.success) {
-                                  Alert.alert('Success', data.message || 'Demo account reset successfully!');
+                                if (res.ok) {
+                                  Alert.alert('Success', 'Demo account reset successfully!');
                                   fetchAccounts();
                                 } else {
-                                  Alert.alert('Error', data.message || 'Failed to reset demo account');
+                                  Alert.alert('Error', data.detail || data.message || 'Failed to reset demo account');
                                 }
                               } catch (error) {
                                 Alert.alert('Error', 'Error resetting demo account');
@@ -1293,7 +1187,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#000000',
+    borderBottomColor: '#333333',
   },
   backBtn: {
     width: 40,
@@ -1331,16 +1225,16 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: '#000000',
+    borderColor: '#333333',
   },
   primaryCard: {
-    borderColor: '#dc2626',
+    borderColor: '#2563EB',
     borderWidth: 2,
   },
   primaryBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
@@ -1349,7 +1243,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   primaryBadgeText: {
-    color: '#000',
+    color: '#ffffff',
     fontSize: 12,
     fontWeight: '600',
   },
@@ -1362,7 +1256,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#dc262620',
+    backgroundColor: '#2563EB20',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1414,7 +1308,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     paddingVertical: 12,
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     borderRadius: 10,
   },
   depositBtnText: {
@@ -1446,7 +1340,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   setPrimaryBtnText: {
-    color: '#dc2626',
+    color: '#2563EB',
     fontSize: 14,
   },
   tradeBtn: {
@@ -1455,7 +1349,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 14,
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     borderRadius: 10,
   },
   tradeBtnText: {
@@ -1484,7 +1378,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   tabActive: {
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
   },
   tabText: {
     color: '#888',
@@ -1492,7 +1386,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   tabTextActive: {
-    color: '#000',
+    color: '#ffffff',
     fontWeight: '600',
   },
   // Buy Challenge Styles
@@ -1518,7 +1412,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#1E1E1E',
     marginHorizontal: 16,
     borderRadius: 12,
     marginBottom: 8,
@@ -1528,7 +1422,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   walletBalanceValue: {
-    color: '#dc2626',
+    color: '#2563EB',
     fontSize: 16,
     fontWeight: 'bold',
   },
@@ -1541,7 +1435,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 16,
     marginVertical: 6,
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#1E1E1E',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#1a1a1a',
@@ -1550,7 +1444,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#dc262620',
+    backgroundColor: '#2563EB20',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -1578,7 +1472,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   buyBtnSmall: {
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
@@ -1599,7 +1493,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   challengeProgress: {
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#1E1E1E',
     borderRadius: 12,
     padding: 12,
     marginBottom: 16,
@@ -1673,7 +1567,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#dc262620',
+    backgroundColor: '#2563EB20',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -1716,7 +1610,7 @@ const styles = StyleSheet.create({
   },
   createAccountBtn: {
     flex: 1,
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -1758,7 +1652,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   transferValueGold: {
-    color: '#dc2626',
+    color: '#2563EB',
     fontSize: 16,
     fontWeight: 'bold',
   },
@@ -1776,7 +1670,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   transferSubmitBtn: {
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -1788,7 +1682,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   withdrawSubmitBtn: {
-    backgroundColor: '#dc2626',
+    backgroundColor: '#2563EB',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -1812,8 +1706,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   accountSelectCardActive: {
-    backgroundColor: '#dc2626',
-    borderColor: '#dc2626',
+    backgroundColor: '#2563EB',
+    borderColor: '#2563EB',
   },
   accountSelectId: {
     fontSize: 14,

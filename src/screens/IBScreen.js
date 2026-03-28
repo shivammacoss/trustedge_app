@@ -18,8 +18,9 @@ import * as SecureStore from 'expo-secure-store';
 import { API_URL } from '../config';
 import { useTheme } from '../context/ThemeContext';
 
-const IBScreen = ({ navigation }) => {
+const IBScreen = ({ navigation, route }) => {
   const { colors, isDark } = useTheme();
+  const hideMainHeader = route?.params?.hideMainHeader;
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -64,24 +65,48 @@ const IBScreen = ({ navigation }) => {
 
   const fetchIBProfile = async () => {
     try {
-      const res = await fetch(`${API_URL}/ib/my-profile/${user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      if (!token) { setLoading(false); return; }
+      
+      const res = await fetch(`${API_URL}/business/status`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
       
-      // Handle case where user is not an IB
-      if (data.isIB === false) {
+      if (!data.is_ib && !data.ib_status) {
         setIbProfile(null);
-      } else if (data.ibUser) {
-        setIbProfile({
-          ...data.ibUser,
-          ibWalletBalance: data.wallet?.balance || 0,
-          totalCommissionEarned: data.wallet?.totalEarned || 0,
-          pendingWithdrawal: data.wallet?.pendingWithdrawal || 0,
-          totalWithdrawn: data.wallet?.totalWithdrawn || 0,
-          stats: data.stats || {}
-        });
-        if (data.levelProgress) {
-          setLevelProgress(data.levelProgress);
+      } else {
+        // Fetch full dashboard if IB is active
+        const ibStatus = data.ib_status || data.status || 'PENDING';
+        const profileData = {
+          _id: data.id || user?.id,
+          status: ibStatus.toUpperCase(),
+          ibStatus: ibStatus.toUpperCase(),
+          referralCode: data.referral_code || data.referralCode || '',
+          ibWalletBalance: 0,
+          totalCommissionEarned: 0,
+          stats: {},
+        };
+        
+        if (ibStatus.toUpperCase() === 'ACTIVE' || ibStatus.toUpperCase() === 'APPROVED') {
+          try {
+            const dashRes = await fetch(`${API_URL}/business/ib/dashboard`, {
+              headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (dashRes.ok) {
+              const dash = await dashRes.json();
+              profileData.ibWalletBalance = dash.wallet_balance || dash.ib_wallet_balance || 0;
+              profileData.totalCommissionEarned = dash.total_commission || dash.total_earned || 0;
+              profileData.stats = {
+                directReferrals: dash.direct_referrals || dash.total_referrals || 0,
+                totalDownline: dash.total_downline || 0,
+              };
+              profileData.referralCode = dash.referral_code || profileData.referralCode;
+            }
+          } catch (e) { console.error('Dashboard fetch error:', e); }
         }
+        
+        setIbProfile(profileData);
       }
     } catch (e) {
       console.error('Error fetching IB profile:', e);
@@ -93,9 +118,19 @@ const IBScreen = ({ navigation }) => {
 
   const fetchReferrals = async () => {
     try {
-      const res = await fetch(`${API_URL}/ib/my-referrals/${user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/business/ib/referrals`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
-      setReferrals(data.referrals || []);
+      const items = (data.items || data.referrals || []).map(r => ({
+        ...r,
+        _id: r.id || r._id,
+        firstName: r.first_name || r.firstName,
+        lastName: r.last_name || r.lastName,
+        createdAt: r.created_at || r.createdAt,
+      }));
+      setReferrals(items);
     } catch (e) {
       console.error('Error fetching referrals:', e);
     }
@@ -103,9 +138,16 @@ const IBScreen = ({ navigation }) => {
 
   const fetchCommissions = async () => {
     try {
-      const res = await fetch(`${API_URL}/ib/my-commissions/${user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/business/ib/commissions`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
-      setCommissions(data.commissions || []);
+      const items = (data.items || data.commissions || []).map(c => ({
+        ...c,
+        _id: c.id || c._id,
+      }));
+      setCommissions(items);
     } catch (e) {
       console.error('Error fetching commissions:', e);
     }
@@ -113,9 +155,12 @@ const IBScreen = ({ navigation }) => {
 
   const fetchDownline = async () => {
     try {
-      const res = await fetch(`${API_URL}/ib/my-downline/${user._id}`);
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/business/ib/tree`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
-      setDownline(data.tree?.downlines || []);
+      setDownline(data.tree?.downlines || data.downlines || data.items || []);
     } catch (e) {
       console.error('Error fetching downline:', e);
     }
@@ -129,17 +174,21 @@ const IBScreen = ({ navigation }) => {
   const handleApplyIB = async () => {
     setIsSubmitting(true);
     try {
-      const res = await fetch(`${API_URL}/ib/apply`, {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/business/apply`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user._id })
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({})
       });
       const data = await res.json();
-      if (data.success || data.ibUser || data.user) {
+      if (res.ok) {
         Alert.alert('Success', 'IB application submitted! Please wait for admin approval.');
         fetchIBProfile();
       } else {
-        Alert.alert('Error', data.message || 'Failed to apply');
+        Alert.alert('Error', data.detail || data.message || 'Failed to apply');
       }
     } catch (e) {
       Alert.alert('Error', 'Failed to submit application');
@@ -224,14 +273,15 @@ const IBScreen = ({ navigation }) => {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.bgPrimary }]}>
-      {/* Header */}
-      <View style={[styles.header, { backgroundColor: colors.bgPrimary }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>IB Program</Text>
-        <View style={{ width: 40 }} />
-      </View>
+      {!hideMainHeader ? (
+        <View style={[styles.header, { backgroundColor: colors.bgPrimary }]}>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+            <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>IB Program</Text>
+          <View style={{ width: 40 }} />
+        </View>
+      ) : null}
 
       <ScrollView
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
@@ -255,7 +305,7 @@ const IBScreen = ({ navigation }) => {
                 'Easy withdrawal to your wallet'
               ].map((benefit, idx) => (
                 <View key={idx} style={styles.benefitRow}>
-                  <Ionicons name="chevron-forward" size={16} color="#dc2626" />
+                  <Ionicons name="chevron-forward" size={16} color="#2563EB" />
                   <Text style={styles.benefitText}>{benefit}</Text>
                 </View>
               ))}
@@ -313,8 +363,8 @@ const IBScreen = ({ navigation }) => {
                 <Text style={[styles.statValue, { color: colors.textPrimary }]}>${ibProfile?.ibWalletBalance?.toFixed(2) || '0.00'}</Text>
               </View>
               <View style={[styles.statCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-                <View style={[styles.statIcon, { backgroundColor: '#dc262620' }]}>
-                  <Ionicons name="trending-up" size={20} color="#dc2626" />
+                <View style={[styles.statIcon, { backgroundColor: '#2563EB20' }]}>
+                  <Ionicons name="trending-up" size={20} color="#2563EB" />
                 </View>
                 <Text style={[styles.statLabel, { color: colors.textMuted }]}>Total Earned</Text>
                 <Text style={[styles.statValue, { color: colors.textPrimary }]}>${ibProfile?.totalCommissionEarned?.toFixed(2) || '0.00'}</Text>
@@ -377,7 +427,7 @@ const IBScreen = ({ navigation }) => {
             {levelProgress?.nextLevel && (
               <View style={[styles.levelProgressCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
                 <View style={styles.levelProgressHeader}>
-                  <Ionicons name="ribbon" size={20} color="#dc2626" />
+                  <Ionicons name="ribbon" size={20} color="#2563EB" />
                   <Text style={[styles.levelProgressTitle, { color: colors.textPrimary }]}>Commission Levels</Text>
                 </View>
                 <View style={styles.progressBarContainer}>
@@ -494,15 +544,15 @@ const IBScreen = ({ navigation }) => {
                   ) : (
                     downline.map((node, idx) => (
                       <View key={node._id || idx} style={[styles.downlineItem, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-                        <View style={[styles.downlineAvatar, { backgroundColor: node.isIB ? '#dc262630' : '#33333' }]}>
-                          <Text style={[styles.avatarText, { color: node.isIB ? '#dc2626' : '#888' }]}>{node.firstName?.charAt(0) || '?'}</Text>
+                        <View style={[styles.downlineAvatar, { backgroundColor: node.isIB ? '#2563EB30' : '#33333' }]}>
+                          <Text style={[styles.avatarText, { color: node.isIB ? '#2563EB' : '#888' }]}>{node.firstName?.charAt(0) || '?'}</Text>
                         </View>
                         <View style={styles.downlineInfo}>
                           <Text style={[styles.downlineName, { color: colors.textPrimary }]}>{node.firstName || 'Unknown'}</Text>
                           <Text style={styles.downlineEmail}>{node.email}</Text>
                         </View>
-                        <View style={[styles.downlineBadge, { backgroundColor: node.isIB ? '#dc262620' : '#33333' }]}>
-                          <Text style={[styles.downlineBadgeText, { color: node.isIB ? '#dc2626' : '#888' }]}>
+                        <View style={[styles.downlineBadge, { backgroundColor: node.isIB ? '#2563EB20' : '#33333' }]}>
+                          <Text style={[styles.downlineBadgeText, { color: node.isIB ? '#2563EB' : '#888' }]}>
                             {node.isIB ? 'IB' : 'User'} • L{(node.level || 0) + 1}
                           </Text>
                         </View>
@@ -570,14 +620,14 @@ const styles = StyleSheet.create({
   
   // Apply Container
   applyContainer: { padding: 20, alignItems: 'center' },
-  applyIconContainer: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#dc262620', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  applyIconContainer: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#2563EB20', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
   applyTitle: { fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 },
   applySubtitle: { color: '#888', fontSize: 14, textAlign: 'center', marginBottom: 20 },
   benefitsCard: { borderRadius: 16, padding: 16, width: '100%', marginBottom: 20 },
   benefitsTitle: { fontSize: 14, fontWeight: '600', marginBottom: 12 },
   benefitRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   benefitText: { color: '#888', fontSize: 13, flex: 1 },
-  applyBtn: { backgroundColor: '#dc2626', paddingHorizontal: 40, paddingVertical: 16, borderRadius: 12 },
+  applyBtn: { backgroundColor: '#2563EB', paddingHorizontal: 40, paddingVertical: 16, borderRadius: 12 },
   applyBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   btnDisabled: { opacity: 0.6 },
   
@@ -623,16 +673,16 @@ const styles = StyleSheet.create({
   progressBarContainer: {},
   progressBarLabels: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   progressLabel: { color: '#888', fontSize: 12 },
-  progressPercent: { color: '#dc2626', fontSize: 12, fontWeight: '600' },
+  progressPercent: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
   progressBarBg: { height: 6, backgroundColor: '#222', borderRadius: 3, overflow: 'hidden' },
-  progressBarFill: { height: '100%', backgroundColor: '#dc2626', borderRadius: 3 },
+  progressBarFill: { height: '100%', backgroundColor: '#2563EB', borderRadius: 3 },
   progressHint: { color: '#666', fontSize: 11, marginTop: 6 },
   
   // Tabs
   tabsScroll: { marginBottom: 12 },
   tabs: { flexDirection: 'row', paddingHorizontal: 16, gap: 8 },
   tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
-  tabActive: { backgroundColor: '#dc2626' },
+  tabActive: { backgroundColor: '#2563EB' },
   tabText: { color: '#888', fontSize: 12, fontWeight: '500' },
   tabTextActive: { color: '#000' },
   
@@ -654,8 +704,8 @@ const styles = StyleSheet.create({
   
   // Referral Item
   referralItem: { flexDirection: 'row', alignItems: 'center', borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1 },
-  referralAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#dc262630', justifyContent: 'center', alignItems: 'center' },
-  avatarText: { color: '#dc2626', fontSize: 16, fontWeight: 'bold' },
+  referralAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#2563EB30', justifyContent: 'center', alignItems: 'center' },
+  avatarText: { color: '#2563EB', fontSize: 16, fontWeight: 'bold' },
   referralInfo: { flex: 1, marginLeft: 12 },
   referralName: { fontSize: 14, fontWeight: '600' },
   referralEmail: { color: '#666', fontSize: 12, marginTop: 2 },
@@ -687,7 +737,7 @@ const styles = StyleSheet.create({
   withdrawBalanceValue: { color: '#22c55e', fontSize: 32, fontWeight: 'bold', marginTop: 8 },
   inputLabel: { color: '#888', fontSize: 12, marginBottom: 8 },
   input: { borderRadius: 12, padding: 16, fontSize: 16, borderWidth: 1, marginBottom: 16 },
-  withdrawBtn: { backgroundColor: '#dc2626', padding: 16, borderRadius: 12, alignItems: 'center' },
+  withdrawBtn: { backgroundColor: '#2563EB', padding: 16, borderRadius: 12, alignItems: 'center' },
   withdrawBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   pendingWithdrawal: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 16 },
   pendingWithdrawalText: { color: '#eab308', fontSize: 13 },

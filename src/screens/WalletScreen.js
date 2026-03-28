@@ -51,6 +51,7 @@ const WalletScreen = ({ navigation }) => {
     accountHolderName: '',
   });
   const [upiId, setUpiId] = useState('');
+  const [bankInfo, setBankInfo] = useState(null);
 
   useEffect(() => {
     loadUser();
@@ -71,13 +72,8 @@ const WalletScreen = ({ navigation }) => {
   }, [user]);
 
   const fetchCurrencies = async () => {
-    try {
-      const res = await fetch(`${API_URL}/payment-methods/currencies/active`);
-      const data = await res.json();
-      setCurrencies(data.currencies || []);
-    } catch (e) {
-      console.error('Error fetching currencies:', e);
-    }
+    // PTD2 does not have a currencies endpoint - USD only
+    setCurrencies([]);
   };
 
   const calculateUSDAmount = (localAmt, currency) => {
@@ -99,37 +95,53 @@ const WalletScreen = ({ navigation }) => {
 
   const fetchWalletData = async () => {
     try {
+      const token = await SecureStore.getItemAsync('token');
+      if (!token) { setRefreshing(false); return; }
+
+      const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+
       const [walletRes, transRes] = await Promise.all([
-        fetch(`${API_URL}/wallet/${user._id}`),
-        fetch(`${API_URL}/wallet/transactions/${user._id}`)
+        fetch(`${API_URL}/wallet/summary`, { headers }),
+        fetch(`${API_URL}/wallet/transactions`, { headers }),
       ]);
-      
-      const walletData = await walletRes.json();
-      const transData = await transRes.json();
-      
-      setWallet(walletData.wallet || { balance: 0 });
-      setTransactions(transData.transactions || []);
+
+      if (walletRes.ok) {
+        const walletData = await walletRes.json();
+        setWallet({ balance: walletData.balance || 0, ...walletData });
+      }
+
+      if (transRes.ok) {
+        const transData = await transRes.json();
+        setTransactions(transData.items || []);
+      }
     } catch (e) {
       console.error('Error fetching wallet:', e);
     }
     setRefreshing(false);
   };
 
+  const fetchBankInfo = async (amount) => {
+    try {
+      const res = await fetch(`${API_URL}/wallet/bank-info?amount=${amount || 100}`);
+      if (res.ok) {
+        const data = await res.json();
+        setBankInfo(data);
+      }
+    } catch (e) {
+      console.error('Error fetching bank info:', e);
+    }
+  };
+
   const fetchPaymentMethods = async () => {
     setLoadingMethods(true);
-    try {
-      console.log('Fetching payment methods from:', `${API_URL}/payment-methods`);
-      const res = await fetch(`${API_URL}/payment-methods`);
-      const data = await res.json();
-      console.log('Payment methods response:', data);
-      // Handle both array and object response
-      const methods = Array.isArray(data) ? data : (data.paymentMethods || []);
-      setPaymentMethods(methods);
-      console.log('Payment methods set:', methods.length);
-    } catch (e) {
-      console.error('Error fetching payment methods:', e);
-    }
+    // PTD2 uses fixed methods; bank details fetched from /wallet/bank-info
+    setPaymentMethods([
+      { id: 'bank', type: 'Bank Transfer', name: 'Bank Transfer' },
+      { id: 'upi', type: 'UPI', name: 'UPI' },
+    ]);
     setLoadingMethods(false);
+    // Fetch bank/UPI details for displaying to user
+    fetchBankInfo(localAmount || 100);
   };
 
   const pickScreenshot = async () => {
@@ -170,55 +182,45 @@ const WalletScreen = ({ navigation }) => {
       return;
     }
 
-    // Calculate USD amount from local currency
     const usdAmount = selectedCurrency && selectedCurrency.currency !== 'USD'
       ? calculateUSDAmount(parseFloat(localAmount), selectedCurrency)
       : parseFloat(localAmount);
 
     setIsSubmitting(true);
     try {
-      // Upload screenshot first if provided
-      let screenshotUrl = null;
-      if (screenshot) {
-        const formData = new FormData();
-        formData.append('screenshot', {
-          uri: screenshot.uri,
-          type: screenshot.mimeType || 'image/jpeg',
-          name: screenshot.fileName || `screenshot_${Date.now()}.jpg`,
-        });
-        formData.append('userId', user._id);
+      const token = await SecureStore.getItemAsync('token');
 
-        const uploadRes = await fetch(`${API_URL}/upload/screenshot`, {
-          method: 'POST',
-          body: formData,
-        });
-        const uploadData = await uploadRes.json();
-        if (uploadData.success) {
-          screenshotUrl = uploadData.url;
-        }
+      // Get user's first live trading account
+      const accountsRes = await fetch(`${API_URL}/accounts`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const accountsData = await accountsRes.json();
+      const accounts = accountsData.items || accountsData || [];
+      const liveAccount = accounts.find(a => !a.is_demo) || accounts[0];
+      if (!liveAccount) {
+        Alert.alert('Error', 'No trading account found. Please contact support.');
+        setIsSubmitting(false);
+        return;
       }
+
+      const methodMap = { 'Bank Transfer': 'bank', 'UPI': 'upi', 'QR Code': 'qr', 'Crypto USDT': 'crypto_usdt' };
+      const method = methodMap[selectedMethod.type] || 'bank';
 
       const res = await fetch(`${API_URL}/wallet/deposit`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          userId: user._id,
+          account_id: liveAccount.id,
           amount: usdAmount,
-          localAmount: parseFloat(localAmount),
-          currency: selectedCurrency?.currency || 'USD',
-          currencySymbol: selectedCurrency?.symbol || '$',
-          exchangeRate: selectedCurrency?.rateToUSD || 1,
-          markup: selectedCurrency?.markup || 0,
-          paymentMethod: selectedMethod.type || selectedMethod.name,
-          transactionRef,
-          screenshot: screenshotUrl || screenshotPreview,
+          method,
+          transaction_id: transactionRef.trim() || undefined,
+          screenshot_url: screenshotPreview || undefined,
         })
       });
       const data = await res.json();
       if (res.ok) {
         Alert.alert('Success', 'Deposit request submitted! Awaiting approval.');
         setShowDepositModal(false);
-        setAmount('');
         setLocalAmount('');
         setTransactionRef('');
         setSelectedMethod(null);
@@ -227,7 +229,7 @@ const WalletScreen = ({ navigation }) => {
         setScreenshotPreview(null);
         fetchWalletData();
       } else {
-        Alert.alert('Error', data.message || 'Failed to submit deposit');
+        Alert.alert('Error', data.detail || data.message || 'Failed to submit deposit');
       }
     } catch (e) {
       Alert.alert('Error', 'Failed to submit deposit request');
@@ -284,14 +286,32 @@ const WalletScreen = ({ navigation }) => {
         };
       }
 
+      const token = await SecureStore.getItemAsync('token');
+
+      // Get user's first live trading account
+      const accountsRes = await fetch(`${API_URL}/accounts`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const accountsData = await accountsRes.json();
+      const accounts = accountsData.items || accountsData || [];
+      const liveAccount = accounts.find(a => !a.is_demo) || accounts[0];
+      if (!liveAccount) {
+        Alert.alert('Error', 'No trading account found. Please contact support.');
+        setIsSubmitting(false);
+        return;
+      }
+
+      const methodMap = { 'Bank Transfer': 'bank', 'UPI': 'upi' };
+      const method = methodMap[selectedMethod.type] || 'bank';
+
       const res = await fetch(`${API_URL}/wallet/withdraw`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
-          userId: user._id,
+          account_id: liveAccount.id,
           amount: parseFloat(amount),
-          paymentMethod: selectedMethod.type || selectedMethod.name,
-          bankAccountDetails,
+          method,
+          bank_details: bankAccountDetails,
         })
       });
       const data = await res.json();
@@ -304,7 +324,7 @@ const WalletScreen = ({ navigation }) => {
         setUpiId('');
         fetchWalletData();
       } else {
-        Alert.alert('Error', data.message || 'Failed to submit withdrawal');
+        Alert.alert('Error', data.detail || data.message || 'Failed to submit withdrawal');
       }
     } catch (e) {
       Alert.alert('Error', 'Failed to submit withdrawal request');
@@ -313,19 +333,11 @@ const WalletScreen = ({ navigation }) => {
   };
 
   const getStatusColor = (status) => {
-    switch (status) {
-      case 'Approved': 
-      case 'APPROVED': 
-      case 'Completed': 
-        return '#dc2626';
-      case 'Pending': 
-      case 'PENDING': 
-        return '#dc2626';
-      case 'Rejected': 
-      case 'REJECTED': 
-        return '#dc2626';
-      default: return '#666';
-    }
+    const s = (status || '').toLowerCase();
+    if (s === 'approved' || s === 'completed' || s === 'success') return '#22c55e';
+    if (s === 'pending' || s === 'processing') return '#eab308';
+    if (s === 'rejected' || s === 'failed' || s === 'cancelled') return '#ef4444';
+    return '#666';
   };
 
   const formatDate = (date) => {
@@ -367,7 +379,7 @@ const WalletScreen = ({ navigation }) => {
           <Text style={[styles.balanceAmount, { color: colors.textPrimary }]}>${wallet.balance?.toLocaleString() || '0.00'}</Text>
           
           <View style={styles.actionButtons}>
-            <TouchableOpacity style={[styles.depositBtn, { backgroundColor: colors.accent }]} onPress={() => { fetchPaymentMethods(); fetchCurrencies(); setShowDepositModal(true); }}>
+            <TouchableOpacity style={[styles.depositBtn, { backgroundColor: colors.accent }]} onPress={() => { fetchPaymentMethods(); fetchBankInfo(100); setShowDepositModal(true); }}>
               <Ionicons name="arrow-down-circle" size={20} color="#000" />
               <Text style={styles.depositBtnText}>Deposit</Text>
             </TouchableOpacity>
@@ -389,47 +401,53 @@ const WalletScreen = ({ navigation }) => {
             </View>
           ) : (
             transactions.map((tx) => {
-              const isPositive = tx.type === 'DEPOSIT' || tx.type === 'Deposit' || tx.type === 'Admin_Fund_Add' || tx.type === 'Admin_Credit_Add' || tx.type === 'Transfer_From_Account' || tx.type === 'Account_Transfer_In';
+              // PTD2 types: deposit, withdrawal, adjustment, credit, profit, loss
+              const isPositive = tx.type === 'deposit' || tx.type === 'DEPOSIT' || tx.type === 'Deposit'
+                || tx.type === 'adjustment' || tx.type === 'credit'
+                || tx.type === 'Admin_Fund_Add' || tx.type === 'Admin_Credit_Add'
+                || tx.type === 'Transfer_From_Account' || tx.type === 'Account_Transfer_In'
+                || (tx.amount > 0);
               const getTypeLabel = (type) => {
                 switch(type) {
+                  case 'deposit': return 'Deposit';
+                  case 'withdrawal': return 'Withdrawal';
+                  case 'adjustment': return 'Admin Adjustment';
+                  case 'credit': return 'Credit';
+                  case 'profit': return 'Trade Profit';
+                  case 'loss': return 'Trade Loss';
                   case 'Admin_Fund_Add': return 'Admin Fund Addition';
                   case 'Admin_Credit_Add': return 'Admin Credit Addition';
                   case 'Admin_Credit_Remove': return 'Admin Credit Removal';
                   case 'Transfer_To_Account': return 'To Trading Account';
                   case 'Transfer_From_Account': return 'From Trading Account';
-                  case 'Account_Transfer_Out': return 'Account Transfer (Out)';
-                  case 'Account_Transfer_In': return 'Account Transfer (In)';
-                  case 'Challenge_Purchase': return 'Challenge Purchase';
-                  default: return type;
+                  default: return type || 'Transaction';
                 }
               };
               const getIcon = (type) => {
-                if (type === 'Admin_Fund_Add' || type === 'Admin_Credit_Add') return 'gift';
-                if (type === 'Transfer_To_Account') return 'send';
-                if (type === 'Transfer_From_Account') return 'download';
+                if (type === 'deposit' || type === 'credit' || type === 'adjustment') return 'arrow-down';
+                if (type === 'withdrawal') return 'arrow-up';
+                if (type === 'profit') return 'trending-up';
+                if (type === 'loss') return 'trending-down';
                 if (isPositive) return 'arrow-down';
                 return 'arrow-up';
               };
               return (
-                <View key={tx._id} style={[styles.transactionItem, { backgroundColor: colors.bgCard }]}>
+                <View key={tx.id || tx._id} style={[styles.transactionItem, { backgroundColor: colors.bgCard }]}>
                   <View style={styles.txLeft}>
                     <View style={[styles.txIcon, { backgroundColor: isPositive ? colors.success + '20' : colors.error + '20' }]}>
-                      <Ionicons 
-                        name={getIcon(tx.type)} 
-                        size={20} 
-                        color={isPositive ? colors.success : colors.error} 
-                      />
+                      <Ionicons name={getIcon(tx.type)} size={20} color={isPositive ? colors.success : colors.error} />
                     </View>
                     <View>
                       <Text style={[styles.txType, { color: colors.textPrimary }]}>{getTypeLabel(tx.type)}</Text>
-                      {tx.tradingAccountName && <Text style={[styles.txDate, { color: colors.textMuted }]}>{tx.tradingAccountName}</Text>}
-                      {tx.description && (tx.type === 'Admin_Fund_Add' || tx.type === 'Admin_Credit_Add') && <Text style={[styles.txDate, { color: colors.textMuted }]}>{tx.description}</Text>}
-                      <Text style={[styles.txDate, { color: colors.textMuted }]}>{formatDate(tx.createdAt)}</Text>
+                      {tx.method && tx.method !== 'admin' && (
+                        <Text style={[styles.txDate, { color: colors.textMuted }]}>{tx.method.replace('_', ' ').toUpperCase()}</Text>
+                      )}
+                      <Text style={[styles.txDate, { color: colors.textMuted }]}>{formatDate(tx.created_at || tx.createdAt)}</Text>
                     </View>
                   </View>
                   <View style={styles.txRight}>
                     <Text style={[styles.txAmount, { color: isPositive ? colors.success : colors.error }]}>
-                      {isPositive ? '+' : '-'}${tx.amount?.toLocaleString()}
+                      {isPositive ? '+' : '-'}${Math.abs(tx.amount || 0).toLocaleString()}
                     </Text>
                     <View style={[styles.statusBadge, { backgroundColor: getStatusColor(tx.status) + '20' }]}>
                       <Text style={[styles.statusText, { color: getStatusColor(tx.status) }]}>{tx.status}</Text>
@@ -548,56 +566,65 @@ const WalletScreen = ({ navigation }) => {
             {/* Payment Method Details */}
             {selectedMethod && (
               <View style={[styles.methodDetails, { backgroundColor: colors.bgSecondary, borderColor: colors.border }]}>
-                {selectedMethod.type === 'Bank Transfer' && (
+                {!bankInfo && (
+                  <ActivityIndicator size="small" color={colors.accent} style={{ margin: 12 }} />
+                )}
+                {selectedMethod.type === 'Bank Transfer' && bankInfo && (
                   <>
-                    <TouchableOpacity style={styles.copyRow} onPress={() => { Clipboard.setStringAsync(selectedMethod.bankName); Alert.alert('Copied', 'Bank name copied!'); }}>
-                      <Text style={styles.detailRow}>
-                        <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Bank: </Text>
-                        <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{selectedMethod.bankName}</Text>
-                      </Text>
-                      <Ionicons name="copy-outline" size={16} color={colors.textMuted} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.copyRow} onPress={() => { Clipboard.setStringAsync(selectedMethod.accountNumber); Alert.alert('Copied', 'Account number copied!'); }}>
-                      <Text style={styles.detailRow}>
-                        <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Account: </Text>
-                        <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{selectedMethod.accountNumber}</Text>
-                      </Text>
-                      <Ionicons name="copy-outline" size={16} color={colors.textMuted} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.copyRow} onPress={() => { Clipboard.setStringAsync(selectedMethod.accountHolderName); Alert.alert('Copied', 'Name copied!'); }}>
-                      <Text style={styles.detailRow}>
-                        <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Name: </Text>
-                        <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{selectedMethod.accountHolderName}</Text>
-                      </Text>
-                      <Ionicons name="copy-outline" size={16} color={colors.textMuted} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.copyRow} onPress={() => { Clipboard.setStringAsync(selectedMethod.ifscCode); Alert.alert('Copied', 'IFSC copied!'); }}>
-                      <Text style={styles.detailRow}>
-                        <Text style={[styles.detailLabel, { color: colors.textMuted }]}>IFSC: </Text>
-                        <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{selectedMethod.ifscCode}</Text>
-                      </Text>
-                      <Ionicons name="copy-outline" size={16} color={colors.textMuted} />
-                    </TouchableOpacity>
+                    {bankInfo.bank_name ? (
+                      <TouchableOpacity style={styles.copyRow} onPress={() => { Clipboard.setStringAsync(bankInfo.bank_name); Alert.alert('Copied', 'Bank name copied!'); }}>
+                        <Text style={styles.detailRow}>
+                          <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Bank: </Text>
+                          <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{bankInfo.bank_name}</Text>
+                        </Text>
+                        <Ionicons name="copy-outline" size={16} color={colors.textMuted} />
+                      </TouchableOpacity>
+                    ) : null}
+                    {bankInfo.account_number ? (
+                      <TouchableOpacity style={styles.copyRow} onPress={() => { Clipboard.setStringAsync(bankInfo.account_number); Alert.alert('Copied', 'Account number copied!'); }}>
+                        <Text style={styles.detailRow}>
+                          <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Account: </Text>
+                          <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{bankInfo.account_number}</Text>
+                        </Text>
+                        <Ionicons name="copy-outline" size={16} color={colors.textMuted} />
+                      </TouchableOpacity>
+                    ) : null}
+                    {bankInfo.account_name ? (
+                      <TouchableOpacity style={styles.copyRow} onPress={() => { Clipboard.setStringAsync(bankInfo.account_name); Alert.alert('Copied', 'Name copied!'); }}>
+                        <Text style={styles.detailRow}>
+                          <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Name: </Text>
+                          <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{bankInfo.account_name}</Text>
+                        </Text>
+                        <Ionicons name="copy-outline" size={16} color={colors.textMuted} />
+                      </TouchableOpacity>
+                    ) : null}
+                    {bankInfo.ifsc_code ? (
+                      <TouchableOpacity style={styles.copyRow} onPress={() => { Clipboard.setStringAsync(bankInfo.ifsc_code); Alert.alert('Copied', 'IFSC copied!'); }}>
+                        <Text style={styles.detailRow}>
+                          <Text style={[styles.detailLabel, { color: colors.textMuted }]}>IFSC: </Text>
+                          <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{bankInfo.ifsc_code}</Text>
+                        </Text>
+                        <Ionicons name="copy-outline" size={16} color={colors.textMuted} />
+                      </TouchableOpacity>
+                    ) : null}
                   </>
                 )}
-                {selectedMethod.type === 'UPI' && (
-                  <TouchableOpacity style={styles.copyRow} onPress={() => { Clipboard.setStringAsync(selectedMethod.upiId); Alert.alert('Copied', 'UPI ID copied!'); }}>
-                    <Text style={styles.detailRow}>
-                      <Text style={[styles.detailLabel, { color: colors.textMuted }]}>UPI ID: </Text>
-                      <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{selectedMethod.upiId}</Text>
-                    </Text>
-                    <Ionicons name="copy-outline" size={16} color={colors.textMuted} />
-                  </TouchableOpacity>
-                )}
-                {selectedMethod.type === 'QR Code' && selectedMethod.qrCodeImage && (
-                  <View style={styles.qrContainer}>
-                    <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Scan QR Code to Pay:</Text>
-                    <Image 
-                      source={{ uri: selectedMethod.qrCodeImage }} 
-                      style={styles.qrImage}
-                      resizeMode="contain"
-                    />
-                  </View>
+                {selectedMethod.type === 'UPI' && bankInfo && bankInfo.upi_id && (
+                  <>
+                    <TouchableOpacity style={styles.copyRow} onPress={() => { Clipboard.setStringAsync(bankInfo.upi_id); Alert.alert('Copied', 'UPI ID copied!'); }}>
+                      <Text style={styles.detailRow}>
+                        <Text style={[styles.detailLabel, { color: colors.textMuted }]}>UPI ID: </Text>
+                        <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{bankInfo.upi_id}</Text>
+                      </Text>
+                      <Ionicons name="copy-outline" size={16} color={colors.textMuted} />
+                    </TouchableOpacity>
+                    {bankInfo.qr_code_url && (
+                      <View style={styles.qrContainer}>
+                        <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Scan QR Code to Pay:</Text>
+                        <Image source={{ uri: bankInfo.qr_code_url }} style={styles.qrImage} resizeMode="contain" />
+                      </View>
+                    )}
+                  </>
                 )}
               </View>
             )}
@@ -803,10 +830,10 @@ const styles = StyleSheet.create({
   balanceAmount: { fontSize: 36, fontWeight: 'bold', marginTop: 8 },
   
   actionButtons: { flexDirection: 'row', gap: 12, marginTop: 24 },
-  depositBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#dc2626', paddingVertical: 14, borderRadius: 12 },
+  depositBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#2563EB', paddingVertical: 14, borderRadius: 12 },
   depositBtnText: { color: '#000', fontSize: 16, fontWeight: '600' },
   withdrawBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, paddingVertical: 14, borderRadius: 12 },
-  withdrawBtnText: { color: '#dc2626', fontSize: 16, fontWeight: '600' },
+  withdrawBtnText: { color: '#2563EB', fontSize: 16, fontWeight: '600' },
   
   transactionsSection: { padding: 16 },
   sectionTitle: { fontSize: 18, fontWeight: '600', marginBottom: 16 },
@@ -834,28 +861,28 @@ const styles = StyleSheet.create({
   
   methodsScroll: { marginTop: 8 },
   methodCard: { paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12, marginRight: 8, borderWidth: 1 },
-  methodCardActive: { backgroundColor: '#dc2626', borderColor: '#dc2626' },
+  methodCardActive: { backgroundColor: '#2563EB', borderColor: '#2563EB' },
   methodName: { fontSize: 14, fontWeight: '500' },
   
   availableBalance: { padding: 16, borderRadius: 12, marginBottom: 8, borderWidth: 1 },
   availableLabel: { color: '#666', fontSize: 12 },
-  availableAmount: { color: '#dc2626', fontSize: 24, fontWeight: 'bold', marginTop: 4 },
+  availableAmount: { color: '#2563EB', fontSize: 24, fontWeight: 'bold', marginTop: 4 },
   
-  submitBtn: { backgroundColor: '#dc2626', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 24 },
-  withdrawSubmitBtn: { backgroundColor: '#dc2626' },
+  submitBtn: { backgroundColor: '#2563EB', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 24 },
+  withdrawSubmitBtn: { backgroundColor: '#2563EB' },
   submitBtnDisabled: { opacity: 0.6 },
   submitBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   
   // Currency selection styles
   currencyCard: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, marginRight: 8, alignItems: 'center', minWidth: 60, borderWidth: 1 },
-  currencyCardActive: { backgroundColor: '#dc2626' },
+  currencyCardActive: { backgroundColor: '#2563EB' },
   currencySymbol: { fontSize: 18, fontWeight: 'bold' },
   currencyName: { color: '#666', fontSize: 10, marginTop: 2 },
   
   // Conversion box styles
-  conversionBox: { backgroundColor: '#dc262620', borderWidth: 1, borderColor: '#dc262650', borderRadius: 12, padding: 16, marginTop: 12, alignItems: 'center' },
+  conversionBox: { backgroundColor: '#2563EB20', borderWidth: 1, borderColor: '#2563EB50', borderRadius: 12, padding: 16, marginTop: 12, alignItems: 'center' },
   conversionLabel: { color: '#666', fontSize: 12 },
-  conversionAmount: { color: '#dc2626', fontSize: 24, fontWeight: 'bold', marginTop: 4 },
+  conversionAmount: { color: '#2563EB', fontSize: 24, fontWeight: 'bold', marginTop: 4 },
   conversionRate: { color: '#666', fontSize: 11, marginTop: 8 },
   
   // Method details styles

@@ -1,191 +1,192 @@
-import { io } from 'socket.io-client';
-import { API_BASE_URL } from '../config';
+import { WS_URL, API_URL } from '../config';
+import { getStoredToken } from '../utils/safeSecureStore';
+import {
+  extractPriceRows,
+  rowsToPriceDict,
+  messageToPriceDict,
+} from '../utils/marketData';
 
-const SOCKET_URL = API_BASE_URL;
-
+/**
+ * Live market data: try native WebSocket (/ws/prices) first, then REST polling.
+ * React Native provides WebSocket; no need for Expo-only polling only.
+ */
 class SocketService {
   constructor() {
-    this.socket = null;
-    this.isConnected = false;
+    this.ws = null;
+    this.pollingInterval = null;
+    this.isPolling = false;
+    this.intentionalDisconnect = false;
     this.priceListeners = new Set();
     this.tradeListeners = new Set();
     this.accountListeners = new Map();
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 10;
     this.prices = {};
+    this.isConnected = false;
   }
 
-  connect() {
-    if (this.socket?.connected) {
-      console.log('[Socket] Already connected');
+  async connect() {
+    if (this.isConnected && (this.ws?.readyState === WebSocket.OPEN || this.isPolling)) {
       return;
     }
+    this.intentionalDisconnect = false;
+    await this.tryWebSocket();
+  }
 
-    console.log('[Socket] Connecting to', SOCKET_URL);
-    
-    this.socket = io(SOCKET_URL, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: this.maxReconnectAttempts,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 10000,
-    });
+  async tryWebSocket() {
+    try {
+      // Gateway accepts anonymous /ws/prices; sending ?token= with an expired JWT closes the socket (4001).
+      const base = (WS_URL || '').replace(/\/$/, '');
+      const url = `${base}/ws/prices`;
 
-    this.socket.on('connect', () => {
-      console.log('[Socket] Connected!', this.socket.id);
-      this.isConnected = true;
-      this.reconnectAttempts = 0;
-      
-      // Subscribe to price stream immediately
-      this.subscribeToPrices();
-    });
+      console.log('[Socket] Trying WebSocket:', url);
+      this.ws = new WebSocket(url);
 
-    this.socket.on('disconnect', (reason) => {
-      console.log('[Socket] Disconnected:', reason);
-      this.isConnected = false;
-    });
+      this.ws.onopen = () => {
+        console.log('[Socket] WebSocket open');
+        this.clearPolling();
+        this.isConnected = true;
+      };
 
-    this.socket.on('connect_error', (error) => {
-      console.log('[Socket] Connection error:', error.message);
-      this.reconnectAttempts++;
-    });
-
-    // Handle price stream (full prices every 500ms)
-    this.socket.on('priceStream', (data) => {
-      if (data.prices) {
-        this.prices = { ...this.prices, ...data.prices };
-        this.notifyPriceListeners(this.prices);
-      }
-    });
-
-    // Handle individual price updates
-    this.socket.on('priceUpdate', (data) => {
-      if (data.symbol && data.price) {
-        this.prices[data.symbol] = data.price;
-        this.notifyPriceListeners(this.prices);
-      }
-    });
-
-    // Handle account updates (trades, balance changes)
-    this.socket.on('accountUpdate', (data) => {
-      if (data.tradingAccountId) {
-        const listeners = this.accountListeners.get(data.tradingAccountId);
-        if (listeners) {
-          listeners.forEach(callback => callback(data));
+      this.ws.onmessage = (event) => {
+        try {
+          const raw = JSON.parse(event.data);
+          const delta = messageToPriceDict(raw);
+          if (Object.keys(delta).length === 0) return;
+          this.prices = { ...this.prices, ...delta };
+          this.notifyPriceListeners(this.prices);
+        } catch (e) {
+          console.warn('[Socket] WS message parse:', e?.message);
         }
+      };
+
+      this.ws.onerror = (e) => {
+        console.warn('[Socket] WebSocket error (falling back to poll if close follows)');
+      };
+
+      this.ws.onclose = () => {
+        this.ws = null;
+        if (this.intentionalDisconnect) {
+          this.isConnected = false;
+          return;
+        }
+        console.log('[Socket] WebSocket closed, using REST poll for prices');
+        this.isConnected = this.isPolling;
+        this.startPolling();
+      };
+    } catch (e) {
+      console.warn('[Socket] WebSocket setup failed:', e?.message);
+      this.startPolling();
+    }
+  }
+
+  clearPolling() {
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval);
+      this.pollingInterval = null;
+    }
+    this.isPolling = false;
+  }
+
+  startPolling() {
+    if (this.isPolling) return;
+    this.isPolling = true;
+    this.isConnected = true;
+    console.log('[Socket] REST polling:', `${API_URL}/instruments/prices/all`);
+
+    this.pollPrices();
+    this.pollingInterval = setInterval(() => this.pollPrices(), 2000);
+  }
+
+  async pollPrices() {
+    try {
+      const headers = await getHeaders();
+      const response = await fetch(`${API_URL}/instruments/prices/all`, { headers });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        console.warn('[Socket] prices/all HTTP', response.status, text?.slice(0, 120));
+        return;
       }
-    });
 
-    // Handle trade updates
-    this.socket.on('tradeUpdate', (data) => {
-      this.tradeListeners.forEach(callback => callback(data));
-    });
-
-    return this.socket;
-  }
-
-  disconnect() {
-    if (this.socket) {
-      this.socket.disconnect();
-      this.socket = null;
-      this.isConnected = false;
-      console.log('[Socket] Disconnected manually');
-    }
-  }
-
-  // Subscribe to real-time price stream
-  subscribeToPrices() {
-    if (this.socket?.connected) {
-      this.socket.emit('subscribePrices');
-      console.log('[Socket] Subscribed to price stream');
-    }
-  }
-
-  // Unsubscribe from price stream
-  unsubscribePrices() {
-    if (this.socket?.connected) {
-      this.socket.emit('unsubscribePrices');
-    }
-  }
-
-  // Subscribe to account updates
-  subscribeToAccount(tradingAccountId) {
-    if (this.socket?.connected && tradingAccountId) {
-      this.socket.emit('subscribe', { tradingAccountId });
-      console.log('[Socket] Subscribed to account:', tradingAccountId);
-    }
-  }
-
-  // Unsubscribe from account updates
-  unsubscribeFromAccount(tradingAccountId) {
-    if (this.socket?.connected && tradingAccountId) {
-      this.socket.emit('unsubscribe', { tradingAccountId });
-    }
-  }
-
-  // Add price listener
-  addPriceListener(callback) {
-    this.priceListeners.add(callback);
-    // Send current prices immediately
-    if (Object.keys(this.prices).length > 0) {
-      callback(this.prices);
-    }
-    return () => this.priceListeners.delete(callback);
-  }
-
-  // Remove price listener
-  removePriceListener(callback) {
-    this.priceListeners.delete(callback);
-  }
-
-  // Add trade listener
-  addTradeListener(callback) {
-    this.tradeListeners.add(callback);
-    return () => this.tradeListeners.delete(callback);
-  }
-
-  // Add account listener
-  addAccountListener(tradingAccountId, callback) {
-    if (!this.accountListeners.has(tradingAccountId)) {
-      this.accountListeners.set(tradingAccountId, new Set());
-    }
-    this.accountListeners.get(tradingAccountId).add(callback);
-    return () => {
-      const listeners = this.accountListeners.get(tradingAccountId);
-      if (listeners) {
-        listeners.delete(callback);
+      const data = await response.json().catch(() => null);
+      const rows = extractPriceRows(data);
+      if (!rows.length) {
+        return;
       }
-    };
+
+      const pricesDict = rowsToPriceDict(rows);
+      this.prices = pricesDict;
+      this.notifyPriceListeners(pricesDict);
+    } catch (error) {
+      console.error('[Socket] Polling error:', error?.message);
+    }
   }
 
-  // Notify all price listeners
-  notifyPriceListeners(prices) {
-    this.priceListeners.forEach(callback => {
+  notifyPriceListeners(data) {
+    this.priceListeners.forEach((callback) => {
       try {
-        callback(prices);
+        callback(data);
       } catch (e) {
         console.error('[Socket] Price listener error:', e);
       }
     });
   }
 
-  // Get current prices
+  addPriceListener(callback) {
+    this.priceListeners.add(callback);
+    if (Object.keys(this.prices).length > 0) {
+      callback(this.prices);
+    }
+    return () => this.priceListeners.delete(callback);
+  }
+
+  removePriceListener(callback) {
+    this.priceListeners.delete(callback);
+  }
+
+  disconnect() {
+    this.intentionalDisconnect = true;
+    this.clearPolling();
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    this.isConnected = false;
+    this.priceListeners.clear();
+    console.log('[Socket] Disconnected');
+  }
+
   getPrices() {
     return this.prices;
   }
 
-  // Get single price
   getPrice(symbol) {
     return this.prices[symbol];
   }
 
-  // Check if connected
   isSocketConnected() {
-    return this.isConnected && this.socket?.connected;
+    return this.isConnected;
+  }
+
+  subscribeToPrices() {}
+  unsubscribePrices() {}
+  subscribeToAccount() {}
+  unsubscribeFromAccount() {}
+  addTradeListener(cb) {
+    this.tradeListeners.add(cb);
+    return () => this.tradeListeners.delete(cb);
+  }
+  addAccountListener() {
+    return () => {};
   }
 }
 
-// Singleton instance
+async function getHeaders() {
+  const token = await getStoredToken();
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 const socketService = new SocketService();
 export default socketService;

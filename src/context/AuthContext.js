@@ -1,6 +1,6 @@
 import React, { createContext, useState, useEffect } from 'react';
 import * as SecureStore from 'expo-secure-store';
-import { API_URL } from '../config/api';
+import { API_URL } from '../config';
 
 export const AuthContext = createContext();
 
@@ -40,14 +40,22 @@ export const AuthProvider = ({ children }) => {
 
       const data = await response.json();
 
-      if (data.success) {
-        await SecureStore.setItemAsync('token', data.token);
-        await SecureStore.setItemAsync('user', JSON.stringify(data.user));
-        setToken(data.token);
-        setUser(data.user);
+      if (response.ok && data.access_token) {
+        // PTD2 backend returns access_token, user_id, role, expires_at
+        const userInfo = {
+          id: data.user_id,
+          email: email,
+          role: data.role,
+          expires_at: data.expires_at
+        };
+        
+        await SecureStore.setItemAsync('token', data.access_token);
+        await SecureStore.setItemAsync('user', JSON.stringify(userInfo));
+        setToken(data.access_token);
+        setUser(userInfo);
         return { success: true };
       } else {
-        return { success: false, message: data.message || 'Login failed' };
+        return { success: false, message: data.detail || data.message || 'Login failed' };
       }
     } catch (error) {
       console.error('Login error:', error);
@@ -67,14 +75,22 @@ export const AuthProvider = ({ children }) => {
 
       const data = await response.json();
 
-      if (data.success) {
-        await SecureStore.setItemAsync('token', data.token);
-        await SecureStore.setItemAsync('user', JSON.stringify(data.user));
-        setToken(data.token);
-        setUser(data.user);
+      if (response.ok && data.access_token) {
+        // PTD2 backend returns access_token, user_id, role, expires_at
+        const userInfo = {
+          id: data.user_id,
+          email: userData.email,
+          role: data.role,
+          expires_at: data.expires_at
+        };
+        
+        await SecureStore.setItemAsync('token', data.access_token);
+        await SecureStore.setItemAsync('user', JSON.stringify(userInfo));
+        setToken(data.access_token);
+        setUser(userInfo);
         return { success: true };
       } else {
-        return { success: false, message: data.message || 'Signup failed' };
+        return { success: false, message: data.detail || data.message || 'Signup failed' };
       }
     } catch (error) {
       console.error('Signup error:', error);
