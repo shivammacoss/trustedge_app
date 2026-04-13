@@ -1,16 +1,16 @@
 {
   "expo": {
-    "name": "ProTrader",
-    "slug": "protrader",
+    "name": "TrustEdge",
+    "slug": "trustedge",
     "version": "1.0.0",
     "runtimeVersion": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/protrader_logo2.png",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "newArchEnabled": false,
     "jsEngine": "hermes",
     "splash": {
-      "image": "./assets/protrader_logo2.png",
+      "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#121212"
     },
@@ -25,15 +25,15 @@
           "NSAllowsLocalNetworking": true
         }
       },
-      "bundleIdentifier": "com.protrader.app"
+      "bundleIdentifier": "com.trustedge.app"
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/protrader_logo2.png",
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#121212"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.protrader.app",
+      "package": "com.trustedge.app",
       "enableProguardInReleaseBuilds": true,
       "enableShrinkResourcesInReleaseBuilds": true
     },

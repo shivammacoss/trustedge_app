@@ -120,7 +120,7 @@ const LoginScreen = ({ navigation }) => {
   if (checkingAuth) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color="#2563eb" />
+        <ActivityIndicator size="large" color="#5a189a" />
       </View>
     );
   }
@@ -143,7 +143,7 @@ const LoginScreen = ({ navigation }) => {
             style={styles.logoImage}
             resizeMode="contain"
           />
-          <Text style={styles.brandName}>ProTrader</Text>
+          <Text style={styles.brandName}>TrustEdge</Text>
         </View>
 
         {/* Tab Switcher */}
@@ -245,7 +245,7 @@ const styles = StyleSheet.create({
   logo: {
     width: 60,
     height: 60,
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
@@ -280,7 +280,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   activeTab: {
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
   },
   tabText: {
     color: '#666',
@@ -330,12 +330,12 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   forgotText: {
-    color: '#2563EB',
+    color: '#5a189a',
     fontSize: 14,
     fontWeight: '500',
   },
   button: {
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
@@ -388,7 +388,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   signupLink: {
-    color: '#2563EB',
+    color: '#5a189a',
     fontSize: 15,
     fontWeight: '600',
   },

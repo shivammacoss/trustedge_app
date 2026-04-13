@@ -7,6 +7,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { View, Text, StyleSheet, LogBox } from 'react-native';
 import { AuthProvider } from './src/context/AuthContext';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
+import { I18nProvider } from './src/i18n';
 
 // Ignore specific warnings for better performance
 LogBox.ignoreLogs([
@@ -40,6 +41,12 @@ import ChallengeRulesScreen from './src/screens/ChallengeRulesScreen';
 import BuyChallengeScreen from './src/screens/BuyChallengeScreen';
 import PortfolioScreen from './src/screens/PortfolioScreen';
 import BusinessScreen from './src/screens/BusinessScreen';
+import KycScreen from './src/screens/KycScreen';
+import PammScreen from './src/screens/PammScreen';
+import RiskCalculatorScreen from './src/screens/RiskCalculatorScreen';
+import EconomicCalendarScreen from './src/screens/EconomicCalendarScreen';
+import AcademyScreen from './src/screens/AcademyScreen';
+import TransactionHistoryScreen from './src/screens/TransactionHistoryScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -103,6 +110,12 @@ const AppContent = () => {
         <Stack.Screen name="ChallengeRules" component={ChallengeRulesScreen} />
         <Stack.Screen name="BuyChallenge" component={BuyChallengeScreen} />
         <Stack.Screen name="Portfolio" component={PortfolioScreen} />
+        <Stack.Screen name="Kyc" component={KycScreen} />
+        <Stack.Screen name="Pamm" component={PammScreen} />
+        <Stack.Screen name="RiskCalculator" component={RiskCalculatorScreen} />
+        <Stack.Screen name="EconomicCalendar" component={EconomicCalendarScreen} />
+        <Stack.Screen name="Academy" component={AcademyScreen} />
+        <Stack.Screen name="TransactionHistory" component={TransactionHistoryScreen} />
       </Stack.Navigator>
     </>
   );
@@ -152,7 +165,9 @@ function AppWithNavigation() {
 export default function App() {
   return (
     <ThemeProvider>
-      <AppWithNavigation />
+      <I18nProvider>
+        <AppWithNavigation />
+      </I18nProvider>
     </ThemeProvider>
   );
 }

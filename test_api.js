@@ -1,8 +1,8 @@
-// Test PTD2 API endpoints
-const API_URL = 'https://api.protrader.today/api/v1';
+// Test TrustEdge API endpoints
+const API_URL = 'https://api.trustedgefx.com/api/v1';
 
 async function testAPI() {
-  console.log('Testing PTD2 API endpoints...\n');
+  console.log('Testing TrustEdge API endpoints...\n');
   
   try {
     // Test instruments endpoint

@@ -44,7 +44,7 @@ const ProfileScreen = ({ navigation }) => {
     fetchProfile();
   }, []);
 
-  // Fetch profile from PTD2 backend
+  // Fetch profile from TrustEdge backend
   const fetchProfile = async () => {
     try {
       const token = await SecureStore.getItemAsync('token');
@@ -160,7 +160,7 @@ const ProfileScreen = ({ navigation }) => {
     setUploadingImage(false);
   };
 
-  // Update profile via PTD2 backend
+  // Update profile via TrustEdge backend
   const handleUpdateProfile = async () => {
     if (!editData.first_name) {
       Alert.alert('Error', 'First name is required');
@@ -203,7 +203,7 @@ const ProfileScreen = ({ navigation }) => {
     setIsSubmitting(false);
   };
 
-  // Change password via PTD2 backend
+  // Change password via TrustEdge backend
   const handleChangePassword = async () => {
     if (!passwordData.currentPassword || !passwordData.newPassword) {
       Alert.alert('Error', 'Please fill in all fields');
@@ -386,7 +386,11 @@ const ProfileScreen = ({ navigation }) => {
             </View>
           </View>
           
-          <View style={[styles.kycCard, { backgroundColor: colors.bgCard, borderColor: getKycStatusColor() }]}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => navigation.navigate('Kyc')}
+            style={[styles.kycCard, { backgroundColor: colors.bgCard, borderColor: getKycStatusColor() }]}
+          >
             <View style={styles.kycHeader}>
               <View style={[styles.kycIconContainer, { backgroundColor: `${getKycStatusColor()}20` }]}>
                 <Ionicons name={getKycStatusIcon()} size={28} color={getKycStatusColor()} />
@@ -398,6 +402,7 @@ const ProfileScreen = ({ navigation }) => {
                   <Text style={[styles.kycStatusText, { color: getKycStatusColor() }]}>{getKycStatusText()}</Text>
                 </View>
               </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
             </View>
 
             {/* KYC Documents List */}
@@ -421,10 +426,10 @@ const ProfileScreen = ({ navigation }) => {
             {(!user?.kyc_status || user?.kyc_status === 'not_submitted') && (
               <View style={[styles.kycWarning, { backgroundColor: '#ef444410' }]}>
                 <Ionicons name="warning" size={16} color="#ef4444" />
-                <Text style={styles.kycWarningText}>Complete KYC to access all features including withdrawals</Text>
+                <Text style={styles.kycWarningText}>Tap to complete KYC and unlock withdrawals</Text>
               </View>
             )}
-          </View>
+          </TouchableOpacity>
         </View>
 
         {/* Actions */}
@@ -441,7 +446,7 @@ const ProfileScreen = ({ navigation }) => {
             setShowEditModal(true);
           }}>
             <View style={styles.actionLeft}>
-              <View style={[styles.actionIcon, { backgroundColor: '#2563EB20' }]}>
+              <View style={[styles.actionIcon, { backgroundColor: '#5a189a20' }]}>
                 <Ionicons name="create-outline" size={20} color={colors.accent} />
               </View>
               <Text style={[styles.actionText, { color: colors.textPrimary }]}>Edit Profile</Text>
@@ -451,7 +456,7 @@ const ProfileScreen = ({ navigation }) => {
           
           <TouchableOpacity style={[styles.actionItem, { backgroundColor: colors.bgCard }]} onPress={() => setShowPasswordModal(true)}>
             <View style={styles.actionLeft}>
-              <View style={[styles.actionIcon, { backgroundColor: '#2563EB20' }]}>
+              <View style={[styles.actionIcon, { backgroundColor: '#5a189a20' }]}>
                 <Ionicons name="lock-closed-outline" size={20} color={colors.accent} />
               </View>
               <Text style={[styles.actionText, { color: colors.textPrimary }]}>Change Password</Text>
@@ -640,7 +645,7 @@ const styles = StyleSheet.create({
   inputLabel: { fontSize: 13, fontWeight: '500', marginBottom: 6 },
   input: { borderRadius: 12, padding: 14, fontSize: 15, marginBottom: 16 },
   
-  submitBtn: { backgroundColor: '#2563EB', borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 8 },
+  submitBtn: { backgroundColor: '#5a189a', borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 8 },
   submitBtnDisabled: { opacity: 0.6 },
   submitBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 });

@@ -2,15 +2,15 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { View, ActivityIndicator } from 'react-native';
 
-/** Dark — BG #121212, Card #1E1E1E, Blue #2563EB */
+/** Dark — BG #121212, Card #1E1E1E, Purple #5a189a */
 const darkTheme = {
   name: 'Dark',
   isDark: true,
   colors: {
-    primary: '#2563EB',
-    primaryHover: '#1D4ED8',
-    secondary: '#2563EB',
-    accent: '#2563EB',
+    primary: '#5a189a',
+    primaryHover: '#7b2cbf',
+    secondary: '#5a189a',
+    accent: '#5a189a',
     bgPrimary: '#121212',
     bgSecondary: '#252525',
     bgCard: '#1E1E1E',
@@ -23,14 +23,14 @@ const darkTheme = {
     success: '#22C55E',
     error: '#EF4444',
     warning: '#F59E0B',
-    info: '#2563EB',
+    info: '#5a189a',
     buyColor: '#22C55E',
     sellColor: '#EF4444',
     profitColor: '#22C55E',
     lossColor: '#EF4444',
     tabBarBg: '#121212',
     cardBg: '#1E1E1E',
-    purple: '#A855F7',
+    purple: '#7b2cbf',
     cyan: '#22D3EE',
     orange: '#F97316',
     pink: '#EC4899',
@@ -39,15 +39,15 @@ const darkTheme = {
   },
 };
 
-/** Light — BG #FFFFFF, Card #F8FAFC, Blue #2563EB */
+/** Light — BG #FFFFFF, Card #F8FAFC, Purple #5a189a */
 const lightTheme = {
   name: 'Light',
   isDark: false,
   colors: {
-    primary: '#2563EB',
-    primaryHover: '#1D4ED8',
-    secondary: '#2563EB',
-    accent: '#2563EB',
+    primary: '#5a189a',
+    primaryHover: '#7b2cbf',
+    secondary: '#5a189a',
+    accent: '#5a189a',
     bgPrimary: '#FFFFFF',
     bgSecondary: '#F8FAFC',
     bgCard: '#F8FAFC',
@@ -60,7 +60,7 @@ const lightTheme = {
     success: '#22C55E',
     error: '#EF4444',
     warning: '#F59E0B',
-    info: '#2563EB',
+    info: '#5a189a',
     buyColor: '#22C55E',
     sellColor: '#EF4444',
     profitColor: '#22C55E',
@@ -70,19 +70,19 @@ const lightTheme = {
   },
 };
 
-const LOADING_BG = '#121212';
-const LOADING_ACCENT = '#2563EB';
+const LOADING_BG = '#FFFFFF';
+const LOADING_ACCENT = '#5a189a';
 
 const ThemeContext = createContext({
-  theme: darkTheme,
-  colors: darkTheme.colors,
-  isDark: true,
+  theme: lightTheme,
+  colors: lightTheme.colors,
+  isDark: false,
   toggleTheme: () => {},
   loading: true,
 });
 
 export const ThemeProvider = ({ children }) => {
-  const [isDark, setIsDark] = useState(true);
+  const [isDark, setIsDark] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -139,9 +139,9 @@ export const useTheme = () => {
   const context = useContext(ThemeContext);
   if (!context) {
     return {
-      theme: darkTheme,
-      colors: darkTheme.colors,
-      isDark: true,
+      theme: lightTheme,
+      colors: lightTheme.colors,
+      isDark: false,
       toggleTheme: () => {},
       loading: false,
     };

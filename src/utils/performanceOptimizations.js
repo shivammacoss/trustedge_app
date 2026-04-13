@@ -1,7 +1,7 @@
 import { InteractionManager } from 'react-native';
 
 /**
- * Performance Optimization Utilities for ProTrader App
+ * Performance Optimization Utilities for TrustEdge App
  * Makes the app smooth like Flipkart and Instagram
  */
 

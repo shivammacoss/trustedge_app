@@ -255,6 +255,66 @@ class ApiService {
     });
   }
 
+  async getAvailableAccountGroups() {
+    return this.request('/accounts/available-groups');
+  }
+
+  async openAccount(accountGroupId) {
+    return this.request('/accounts/open', {
+      method: 'POST',
+      body: JSON.stringify({ account_group_id: accountGroupId }),
+    });
+  }
+
+  async deleteAccount(accountId) {
+    return this.request(`/accounts/${accountId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async transferInternal(fromAccountId, toAccountId, amount) {
+    return this.request('/wallet/transfer-internal', {
+      method: 'POST',
+      body: JSON.stringify({
+        from_account_id: fromAccountId,
+        to_account_id: toAccountId,
+        amount,
+      }),
+    });
+  }
+
+  // KYC API (matches web /profile/kyc/submit/)
+  async submitKyc(formData) {
+    const token = await SecureStore.getItemAsync('token');
+    const res = await fetch(`${this.baseUrl}/profile/kyc/submit/`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.message || 'KYC submit failed');
+    return data;
+  }
+
+  // PAMM allocations (web format)
+  async getMyAllocations() {
+    return this.request('/social/my-allocations');
+  }
+
+  async withdrawAllocation(masterId) {
+    return this.request(`/social/mamm-pamm/${masterId}/withdraw`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getMasterPerformance() {
+    return this.request('/social/master-performance');
+  }
+
+  async getMasterInvestors() {
+    return this.request('/social/master-investors');
+  }
+
   // Instruments APIs
   async getInstruments() {
     return this.request('/instruments');
@@ -315,7 +375,7 @@ class ApiService {
     return this.request(`/accounts/${accountId}/summary`);
   }
 
-  // Social Trading - PTD2 format
+  // Social Trading - TrustEdge format
   async getMasters() {
     return this.request('/social/masters');
   }

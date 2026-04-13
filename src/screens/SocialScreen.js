@@ -24,8 +24,15 @@ const TABS = [
   { id: 'leaderboard', label: 'Leaderboard' },
   { id: 'my-copies', label: 'My Copies' },
   { id: 'mamm', label: 'MAM/PAMM' },
+  { id: 'investments', label: 'My Investments' },
   { id: 'provider', label: 'Become Provider' },
   { id: 'dashboard', label: 'My Dashboard' },
+];
+
+const PROVIDER_TYPES = [
+  { value: 'signal_provider', label: 'Signal Provider' },
+  { value: 'pamm', label: 'PAMM' },
+  { value: 'mamm', label: 'MAMM' },
 ];
 
 const SORTS = [
@@ -82,17 +89,33 @@ export default function SocialScreen({ navigation }) {
   const [investSubmitting, setInvestSubmitting] = useState(false);
 
   /* Become provider */
+  const [provType, setProvType] = useState('signal_provider');
   const [provDesc, setProvDesc] = useState('');
   const [provFee, setProvFee] = useState('20');
+  const [provMgmtFee, setProvMgmtFee] = useState('0');
   const [provMin, setProvMin] = useState('100');
   const [provMaxInv, setProvMaxInv] = useState('100');
   const [provAccountId, setProvAccountId] = useState('');
   const [provSubmitting, setProvSubmitting] = useState(false);
 
+  /* My Investments (PAMM allocations) */
+  const [allocations, setAllocations] = useState([]);
+  const [allocSummary, setAllocSummary] = useState(null);
+  const [allocLoading, setAllocLoading] = useState(false);
+  const [refillTarget, setRefillTarget] = useState(null);
+  const [refillAmount, setRefillAmount] = useState('');
+  const [refillSubmitting, setRefillSubmitting] = useState(false);
+  const [withdrawingId, setWithdrawingId] = useState(null);
+
+  /* MAMM volume scaling for invest */
+  const [investScaling, setInvestScaling] = useState('100');
+
   /* Dashboard */
   const [dash, setDash] = useState(null);
   const [dashLoading, setDashLoading] = useState(false);
   const [dashError, setDashError] = useState(null);
+  const [perfData, setPerfData] = useState(null);
+  const [investorsList, setInvestorsList] = useState([]);
 
   const loadAccounts = async () => {
     try {
@@ -176,12 +199,44 @@ export default function SocialScreen({ navigation }) {
         setDashError(data.detail || 'Not a provider yet');
       } else {
         setDash(data);
+        // Fetch performance + investors when provider is approved
+        if (data?.status === 'approved' || data?.id) {
+          const [perfRes, invRes] = await Promise.all([
+            fetch(`${API_URL}/social/master-performance`, { headers: h }).catch(() => null),
+            fetch(`${API_URL}/social/master-investors`, { headers: h }).catch(() => null),
+          ]);
+          if (perfRes?.ok) setPerfData(await perfRes.json().catch(() => null));
+          if (invRes?.ok) {
+            const invData = await invRes.json().catch(() => ({}));
+            setInvestorsList(invData.investors || invData.items || []);
+          }
+        }
       }
     } catch (e) {
       setDash(null);
       setDashError(e.message);
     }
     setDashLoading(false);
+  }, []);
+
+  const fetchAllocations = useCallback(async () => {
+    setAllocLoading(true);
+    try {
+      const h = await authHeaders();
+      const res = await fetch(`${API_URL}/social/my-allocations`, { headers: h });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setAllocations(data.items || []);
+        setAllocSummary(data.summary || null);
+      } else {
+        setAllocations([]);
+        setAllocSummary(null);
+      }
+    } catch (e) {
+      setAllocations([]);
+      setAllocSummary(null);
+    }
+    setAllocLoading(false);
   }, []);
 
   useEffect(() => {
@@ -195,8 +250,9 @@ export default function SocialScreen({ navigation }) {
   useEffect(() => {
     if (tab === 'my-copies') fetchMyCopies();
     if (tab === 'mamm') fetchMamm();
+    if (tab === 'investments') fetchAllocations();
     if (tab === 'dashboard') fetchDashboard();
-  }, [tab, fetchMyCopies, fetchMamm, fetchDashboard]);
+  }, [tab, fetchMyCopies, fetchMamm, fetchAllocations, fetchDashboard]);
 
   const openDetail = async (id) => {
     setDetailId(id);
@@ -216,7 +272,14 @@ export default function SocialScreen({ navigation }) {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([loadAccounts(), fetchLeaderboard(), fetchMyCopies(), fetchMamm(), fetchDashboard()]);
+    await Promise.all([
+      loadAccounts(),
+      fetchLeaderboard(),
+      fetchMyCopies(),
+      fetchMamm(),
+      fetchAllocations(),
+      fetchDashboard(),
+    ]);
     setRefreshing(false);
   };
 
@@ -295,7 +358,11 @@ export default function SocialScreen({ navigation }) {
     setInvestSubmitting(true);
     try {
       const h = await authHeaders();
-      const url = `${API_URL}/social/mamm-pamm/${investTarget.id}/invest?account_id=${aid}&amount=${amt}`;
+      const isMamm = String(investTarget?.master_type || '').toLowerCase() === 'mamm';
+      let url = `${API_URL}/social/mamm-pamm/${investTarget.id}/invest?account_id=${aid}&amount=${amt}`;
+      if (isMamm && investScaling) {
+        url += `&volume_scaling_pct=${parseFloat(investScaling) || 100}`;
+      }
       const res = await fetch(url, { method: 'POST', headers: h });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) Alert.alert('Error', data.detail || 'Failed');
@@ -303,12 +370,76 @@ export default function SocialScreen({ navigation }) {
         Alert.alert('Success', 'Investment submitted');
         setInvestTarget(null);
         setInvestAmount('');
+        setInvestScaling('100');
         fetchMamm();
+        fetchAllocations();
       }
     } catch (e) {
       Alert.alert('Error', e.message);
     }
     setInvestSubmitting(false);
+  };
+
+  const submitRefill = async () => {
+    if (!refillTarget) return;
+    const aid = copyAccountId;
+    const amt = parseFloat(refillAmount);
+    if (!aid) { Alert.alert('Account', 'Select account'); return; }
+    if (!amt || amt <= 0) { Alert.alert('Amount', 'Enter a valid amount'); return; }
+    setRefillSubmitting(true);
+    try {
+      const h = await authHeaders();
+      const masterId = refillTarget.master_id || refillTarget.id;
+      const url = `${API_URL}/social/mamm-pamm/${masterId}/invest?account_id=${aid}&amount=${amt}`;
+      const res = await fetch(url, { method: 'POST', headers: h });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        Alert.alert('Error', data.detail || 'Refill failed');
+      } else {
+        Alert.alert('Success', `Topped up by $${amt}`);
+        setRefillTarget(null);
+        setRefillAmount('');
+        fetchAllocations();
+      }
+    } catch (e) {
+      Alert.alert('Error', e.message);
+    }
+    setRefillSubmitting(false);
+  };
+
+  const withdrawAllocation = (alloc) => {
+    Alert.alert(
+      'Withdraw allocation',
+      `Withdraw all funds from ${alloc.manager_name}? This closes positions and returns capital to your wallet.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Withdraw',
+          style: 'destructive',
+          onPress: async () => {
+            setWithdrawingId(alloc.id);
+            try {
+              const h = await authHeaders();
+              const masterId = alloc.master_id || alloc.id;
+              const res = await fetch(`${API_URL}/social/mamm-pamm/${masterId}/withdraw`, {
+                method: 'DELETE',
+                headers: h,
+              });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) {
+                Alert.alert('Error', data.detail || 'Withdraw failed');
+              } else {
+                Alert.alert('Success', `Returned $${Number(data.returned_to_wallet || 0).toFixed(2)} to wallet`);
+                fetchAllocations();
+              }
+            } catch (e) {
+              Alert.alert('Error', e.message);
+            }
+            setWithdrawingId(null);
+          },
+        },
+      ]
+    );
   };
 
   const submitBecomeProvider = async () => {
@@ -319,14 +450,22 @@ export default function SocialScreen({ navigation }) {
     setProvSubmitting(true);
     try {
       const h = await authHeaders();
-      const q = [
+      const isManager = provType === 'pamm' || provType === 'mamm';
+      const params = [
         `account_id=${encodeURIComponent(provAccountId)}`,
+        `master_type=${encodeURIComponent(provType)}`,
         `description=${encodeURIComponent(provDesc || '')}`,
         `performance_fee_pct=${encodeURIComponent(provFee || '20')}`,
         `min_investment=${encodeURIComponent(provMin || '100')}`,
         `max_investors=${encodeURIComponent(provMaxInv || '100')}`,
-      ].join('&');
-      const res = await fetch(`${API_URL}/social/become-provider?${q}`, { method: 'POST', headers: h });
+      ];
+      if (isManager) {
+        params.push(`management_fee_pct=${encodeURIComponent(provMgmtFee || '0')}`);
+      }
+      const res = await fetch(`${API_URL}/social/become-provider?${params.join('&')}`, {
+        method: 'POST',
+        headers: h,
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) Alert.alert('Error', data.detail || 'Failed to apply');
       else {
@@ -602,12 +741,148 @@ export default function SocialScreen({ navigation }) {
             </>
           )}
 
+          {tab === 'investments' && (
+            <>
+              {allocLoading ? (
+                <ActivityIndicator style={{ marginVertical: 24 }} color={accent} />
+              ) : allocations.length === 0 ? (
+                <View style={styles.emptyBox}>
+                  <Ionicons name="briefcase-outline" size={48} color={colors.textMuted} />
+                  <Text style={[styles.emptyTitle, { color: colors.textSecondary }]}>No PAMM allocations yet</Text>
+                  <TouchableOpacity onPress={() => setTab('mamm')} style={{ marginTop: 12 }}>
+                    <Text style={{ color: accent, fontWeight: '600' }}>Browse MAM/PAMM →</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <>
+                  {allocSummary && (
+                    <View style={[styles.dashCard, cardBorder, { marginBottom: 12 }]}>
+                      <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
+                        <Text style={{ color: colors.textMuted }}>Total invested</Text>
+                        <Text style={{ color: colors.textPrimary, fontWeight: '700' }}>${Number(allocSummary.total_invested || 0).toFixed(2)}</Text>
+                      </View>
+                      <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
+                        <Text style={{ color: colors.textMuted }}>Current value</Text>
+                        <Text style={{ color: colors.textPrimary, fontWeight: '700' }}>${Number(allocSummary.total_current_value || 0).toFixed(2)}</Text>
+                      </View>
+                      <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
+                        <Text style={{ color: colors.textMuted }}>Total P&L</Text>
+                        <Text style={{ color: (allocSummary.total_pnl || 0) >= 0 ? colors.success : colors.error, fontWeight: '700' }}>
+                          {(allocSummary.total_pnl || 0) >= 0 ? '+' : ''}${Number(allocSummary.total_pnl || 0).toFixed(2)}
+                        </Text>
+                      </View>
+                      <View style={[styles.dashRow, { borderBottomColor: colors.border, borderBottomWidth: 0 }]}>
+                        <Text style={{ color: colors.textMuted }}>Overall return</Text>
+                        <Text style={{ color: (allocSummary.overall_pnl_pct || 0) >= 0 ? colors.success : colors.error, fontWeight: '700' }}>
+                          {(allocSummary.overall_pnl_pct || 0) >= 0 ? '+' : ''}{Number(allocSummary.overall_pnl_pct || 0).toFixed(2)}%
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+
+                  {allocations.map((a) => (
+                    <View key={a.id} style={[styles.mammCard, cardBorder]}>
+                      <View style={styles.providerTop}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.pName, { color: colors.textPrimary }]}>{a.manager_name}</Text>
+                          <Text style={[styles.pFee, { color: colors.textMuted }]}>
+                            Joined {a.joined_at ? new Date(a.joined_at).toLocaleDateString() : '—'} · Fee {a.performance_fee_pct}%
+                          </Text>
+                        </View>
+                        <View style={{
+                          paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6,
+                          backgroundColor: a.status === 'active' ? colors.success + '20' : colors.textMuted + '20',
+                        }}>
+                          <Text style={{ color: a.status === 'active' ? colors.success : colors.textMuted, fontSize: 10, fontWeight: '700' }}>
+                            {String(a.status || '').toUpperCase()}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={[styles.stats3, { borderTopColor: colors.border, marginTop: 10 }]}>
+                        <View>
+                          <Text style={[styles.sLbl, { color: colors.textMuted }]}>Invested</Text>
+                          <Text style={[styles.sVal, { color: colors.textPrimary }]}>${Number(a.allocation_amount || 0).toFixed(2)}</Text>
+                        </View>
+                        <View>
+                          <Text style={[styles.sLbl, { color: colors.textMuted }]}>Current</Text>
+                          <Text style={[styles.sVal, { color: colors.textPrimary }]}>${Number(a.current_value || 0).toFixed(2)}</Text>
+                        </View>
+                        <View>
+                          <Text style={[styles.sLbl, { color: colors.textMuted }]}>P&L</Text>
+                          <Text style={[styles.sVal, { color: (a.total_pnl || 0) >= 0 ? colors.success : colors.error }]}>
+                            {(a.total_pnl || 0) >= 0 ? '+' : ''}${Number(a.total_pnl || 0).toFixed(2)}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {a.status === 'active' && (
+                        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                          <TouchableOpacity
+                            style={{
+                              flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center',
+                              backgroundColor: accentMutedLight, borderWidth: 1, borderColor: accent,
+                            }}
+                            onPress={() => {
+                              setRefillTarget(a);
+                              setRefillAmount('');
+                            }}
+                          >
+                            <Text style={{ color: accent, fontWeight: '700', fontSize: 12 }}>Refill</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={{
+                              flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center',
+                              borderWidth: 1, borderColor: colors.error,
+                            }}
+                            onPress={() => withdrawAllocation(a)}
+                            disabled={withdrawingId === a.id}
+                          >
+                            {withdrawingId === a.id ? (
+                              <ActivityIndicator color={colors.error} size="small" />
+                            ) : (
+                              <Text style={{ color: colors.error, fontWeight: '700', fontSize: 12 }}>Withdraw</Text>
+                            )}
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </View>
+                  ))}
+                </>
+              )}
+            </>
+          )}
+
           {tab === 'provider' && (
             <View style={[styles.formCard, cardBorder]}>
-              <Text style={[styles.formTitle, { color: colors.textPrimary }]}>Apply as signal provider</Text>
+              <Text style={[styles.formTitle, { color: colors.textPrimary }]}>Apply as provider</Text>
               <Text style={[styles.formHint, { color: colors.textMuted }]}>
                 Uses a live account. Admin approves new providers.
               </Text>
+
+              <Text style={[styles.inputLbl, { color: colors.textSecondary }]}>Provider type</Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 6 }}>
+                {PROVIDER_TYPES.map((t) => (
+                  <TouchableOpacity
+                    key={t.value}
+                    onPress={() => setProvType(t.value)}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 10,
+                      borderRadius: 10,
+                      borderWidth: 1,
+                      alignItems: 'center',
+                      borderColor: provType === t.value ? accent : colors.border,
+                      backgroundColor: provType === t.value ? accentMutedLight : colors.bgSecondary,
+                    }}
+                  >
+                    <Text style={{ color: provType === t.value ? accent : colors.textSecondary, fontWeight: '700', fontSize: 12 }}>
+                      {t.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
               <Text style={[styles.inputLbl, { color: colors.textSecondary }]}>Trading account</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
                 {accounts.map((acc) => {
@@ -649,6 +924,17 @@ export default function SocialScreen({ navigation }) {
                 onChangeText={setProvFee}
                 keyboardType="decimal-pad"
               />
+              {(provType === 'pamm' || provType === 'mamm') && (
+                <>
+                  <Text style={[styles.inputLbl, { color: colors.textSecondary }]}>Management fee % (0–10)</Text>
+                  <TextInput
+                    style={[styles.input, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: colors.bgSecondary }]}
+                    value={provMgmtFee}
+                    onChangeText={setProvMgmtFee}
+                    keyboardType="decimal-pad"
+                  />
+                </>
+              )}
               <Text style={[styles.inputLbl, { color: colors.textSecondary }]}>Min investment ($)</Text>
               <TextInput
                 style={[styles.input, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: colors.bgSecondary }]}
@@ -690,39 +976,106 @@ export default function SocialScreen({ navigation }) {
                   </TouchableOpacity>
                 </View>
               ) : (
-                <View style={[styles.dashCard, cardBorder]}>
-                  <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
-                    <Text style={{ color: colors.textMuted }}>Status</Text>
-                    <Text style={{ color: colors.textPrimary, fontWeight: '700' }}>{dash.status}</Text>
+                <>
+                  <View style={[styles.dashCard, cardBorder]}>
+                    <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
+                      <Text style={{ color: colors.textMuted }}>Status</Text>
+                      <Text style={{ color: colors.textPrimary, fontWeight: '700' }}>{dash.status}</Text>
+                    </View>
+                    <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
+                      <Text style={{ color: colors.textMuted }}>Type</Text>
+                      <Text style={{ color: colors.textPrimary }}>{dash.master_type}</Text>
+                    </View>
+                    <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
+                      <Text style={{ color: colors.textMuted }}>Total AUM</Text>
+                      <Text style={{ color: colors.textPrimary }}>${Number(perfData?.total_aum ?? dash.total_aum ?? 0).toFixed(2)}</Text>
+                    </View>
+                    <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
+                      <Text style={{ color: colors.textMuted }}>Investors</Text>
+                      <Text style={{ color: colors.textPrimary }}>{perfData?.total_investors ?? dash.active_investors ?? 0}</Text>
+                    </View>
+                    <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
+                      <Text style={{ color: colors.textMuted }}>Fee earnings</Text>
+                      <Text style={{ color: colors.success }}>${Number(perfData?.fee_earnings ?? 0).toFixed(2)}</Text>
+                    </View>
+                    <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
+                      <Text style={{ color: colors.textMuted }}>Sharpe ratio</Text>
+                      <Text style={{ color: colors.textPrimary }}>{Number(perfData?.sharpe_ratio ?? 0).toFixed(2)}</Text>
+                    </View>
+                    <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
+                      <Text style={{ color: colors.textMuted }}>Max drawdown</Text>
+                      <Text style={{ color: colors.error }}>{Number(perfData?.max_drawdown_pct ?? dash.max_drawdown_pct ?? 0).toFixed(2)}%</Text>
+                    </View>
+                    <View style={[styles.dashRow, { borderBottomColor: colors.border, borderBottomWidth: 0 }]}>
+                      <Text style={{ color: colors.textMuted }}>Total return %</Text>
+                      <Text style={{ color: (perfData?.total_return_pct ?? dash.total_return_pct ?? 0) >= 0 ? colors.success : colors.error }}>
+                        {(perfData?.total_return_pct ?? dash.total_return_pct ?? 0) >= 0 ? '+' : ''}
+                        {Number(perfData?.total_return_pct ?? dash.total_return_pct ?? 0).toFixed(2)}%
+                      </Text>
+                    </View>
                   </View>
-                  <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
-                    <Text style={{ color: colors.textMuted }}>Type</Text>
-                    <Text style={{ color: colors.textPrimary }}>{dash.master_type}</Text>
-                  </View>
-                  <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
-                    <Text style={{ color: colors.textMuted }}>Followers</Text>
-                    <Text style={{ color: colors.textPrimary }}>{dash.followers_count}</Text>
-                  </View>
-                  <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
-                    <Text style={{ color: colors.textMuted }}>Active investors</Text>
-                    <Text style={{ color: colors.textPrimary }}>{dash.active_investors}</Text>
-                  </View>
-                  <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
-                    <Text style={{ color: colors.textMuted }}>Total AUM</Text>
-                    <Text style={{ color: colors.textPrimary }}>${Number(dash.total_aum).toFixed(2)}</Text>
-                  </View>
-                  <View style={[styles.dashRow, { borderBottomColor: colors.border }]}>
-                    <Text style={{ color: colors.textMuted }}>Investor profit</Text>
-                    <Text style={{ color: colors.success }}>${Number(dash.total_investor_profit).toFixed(2)}</Text>
-                  </View>
-                  <View style={[styles.dashRow, { borderBottomColor: colors.border, borderBottomWidth: 0 }]}>
-                    <Text style={{ color: colors.textMuted }}>Your return %</Text>
-                    <Text style={{ color: dash.total_return_pct >= 0 ? colors.success : colors.error }}>
-                      {dash.total_return_pct >= 0 ? '+' : ''}
-                      {Number(dash.total_return_pct).toFixed(2)}%
-                    </Text>
-                  </View>
-                </View>
+
+                  {Array.isArray(perfData?.monthly_breakdown) && perfData.monthly_breakdown.length > 0 && (
+                    <View style={[styles.dashCard, cardBorder, { marginTop: 12 }]}>
+                      <Text style={{ color: colors.textPrimary, fontWeight: '700', fontSize: 13, marginBottom: 12 }}>
+                        Monthly performance
+                      </Text>
+                      {(() => {
+                        const maxAbs = Math.max(...perfData.monthly_breakdown.map((m) => Math.abs(m.profit || 0)), 1);
+                        return perfData.monthly_breakdown.map((m, i) => {
+                          const pct = (Math.abs(m.profit || 0) / maxAbs) * 100;
+                          const positive = (m.profit || 0) >= 0;
+                          return (
+                            <View key={i} style={{ marginBottom: 10 }}>
+                              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                                <Text style={{ color: colors.textMuted, fontSize: 11 }}>{m.month}</Text>
+                                <Text style={{ color: positive ? colors.success : colors.error, fontSize: 11, fontWeight: '700' }}>
+                                  {positive ? '+' : ''}${Number(m.profit || 0).toFixed(2)}
+                                </Text>
+                              </View>
+                              <View style={{ height: 6, backgroundColor: colors.bgSecondary, borderRadius: 3, overflow: 'hidden' }}>
+                                <View
+                                  style={{
+                                    width: `${pct}%`,
+                                    height: '100%',
+                                    backgroundColor: positive ? colors.success : colors.error,
+                                    borderRadius: 3,
+                                  }}
+                                />
+                              </View>
+                            </View>
+                          );
+                        });
+                      })()}
+                    </View>
+                  )}
+
+                  {investorsList.length > 0 && (
+                    <View style={[styles.dashCard, cardBorder, { marginTop: 12 }]}>
+                      <Text style={{ color: colors.textPrimary, fontWeight: '700', fontSize: 13, marginBottom: 8 }}>
+                        Investors ({investorsList.length})
+                      </Text>
+                      {investorsList.map((inv, i) => (
+                        <View
+                          key={inv.id || i}
+                          style={[styles.dashRow, { borderBottomColor: colors.border, borderBottomWidth: i === investorsList.length - 1 ? 0 : StyleSheet.hairlineWidth }]}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: colors.textPrimary, fontSize: 13, fontWeight: '600' }}>
+                              {inv.user_name || inv.user_email || 'Investor'}
+                            </Text>
+                            <Text style={{ color: colors.textMuted, fontSize: 10, marginTop: 2 }}>
+                              ${Number(inv.allocated || 0).toFixed(2)} · {Number(inv.share_pct || 0).toFixed(1)}% share
+                            </Text>
+                          </View>
+                          <Text style={{ color: (inv.pnl || 0) >= 0 ? colors.success : colors.error, fontSize: 12, fontWeight: '700' }}>
+                            {(inv.pnl || 0) >= 0 ? '+' : ''}${Number(inv.pnl || 0).toFixed(2)}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </>
               )}
             </>
           )}
@@ -844,8 +1197,26 @@ export default function SocialScreen({ navigation }) {
               Invest — {investTarget?.manager_name}
             </Text>
             <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 12 }}>
-              Min ${investTarget?.min_investment}
+              Min ${investTarget?.min_investment} · {String(investTarget?.master_type || '').toUpperCase()}
             </Text>
+            <Text style={[styles.inputLbl, { color: colors.textSecondary }]}>Account</Text>
+            <ScrollView horizontal style={{ marginBottom: 8 }}>
+              {accounts.map((acc) => {
+                const id = acc.id || acc._id;
+                return (
+                  <TouchableOpacity
+                    key={id}
+                    onPress={() => setCopyAccountId(id)}
+                    style={[styles.acctPick, { borderColor: copyAccountId === id ? accent : colors.border }]}
+                  >
+                    <Text style={{ color: colors.textPrimary, fontSize: 11 }} numberOfLines={1}>
+                      {acc.accountId || acc.account_number || String(id).slice(0, 8)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <Text style={[styles.inputLbl, { color: colors.textSecondary }]}>Amount (USD)</Text>
             <TextInput
               style={[styles.input, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: colors.bgSecondary }]}
               value={investAmount}
@@ -854,12 +1225,73 @@ export default function SocialScreen({ navigation }) {
               placeholder="Amount"
               placeholderTextColor={colors.textMuted}
             />
+            {String(investTarget?.master_type || '').toLowerCase() === 'mamm' && (
+              <>
+                <Text style={[styles.inputLbl, { color: colors.textSecondary }]}>Volume scaling % (1–500)</Text>
+                <TextInput
+                  style={[styles.input, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: colors.bgSecondary }]}
+                  value={investScaling}
+                  onChangeText={setInvestScaling}
+                  keyboardType="decimal-pad"
+                  placeholder="100"
+                  placeholderTextColor={colors.textMuted}
+                />
+              </>
+            )}
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
               <TouchableOpacity style={[styles.secondaryBtn, { borderColor: colors.border }]} onPress={() => setInvestTarget(null)}>
                 <Text style={{ color: colors.textPrimary }}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.primaryBtn, { flex: 1, backgroundColor: accent }]} onPress={submitInvest} disabled={investSubmitting}>
                 {investSubmitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnTxt}>Invest</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Refill PAMM allocation */}
+      <Modal visible={!!refillTarget} animationType="fade" transparent onRequestClose={() => setRefillTarget(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalSheet, { backgroundColor: colors.bgCard }]}>
+            <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
+              Refill — {refillTarget?.manager_name}
+            </Text>
+            <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 12 }}>
+              Top up your existing allocation
+            </Text>
+            <Text style={[styles.inputLbl, { color: colors.textSecondary }]}>Account</Text>
+            <ScrollView horizontal style={{ marginBottom: 8 }}>
+              {accounts.map((acc) => {
+                const id = acc.id || acc._id;
+                return (
+                  <TouchableOpacity
+                    key={id}
+                    onPress={() => setCopyAccountId(id)}
+                    style={[styles.acctPick, { borderColor: copyAccountId === id ? accent : colors.border }]}
+                  >
+                    <Text style={{ color: colors.textPrimary, fontSize: 11 }} numberOfLines={1}>
+                      {acc.accountId || acc.account_number || String(id).slice(0, 8)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <Text style={[styles.inputLbl, { color: colors.textSecondary }]}>Refill amount (USD)</Text>
+            <TextInput
+              style={[styles.input, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: colors.bgSecondary }]}
+              value={refillAmount}
+              onChangeText={setRefillAmount}
+              keyboardType="decimal-pad"
+              placeholder="Amount to add"
+              placeholderTextColor={colors.textMuted}
+            />
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+              <TouchableOpacity style={[styles.secondaryBtn, { borderColor: colors.border }]} onPress={() => setRefillTarget(null)}>
+                <Text style={{ color: colors.textPrimary }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.primaryBtn, { flex: 1, backgroundColor: accent }]} onPress={submitRefill} disabled={refillSubmitting}>
+                {refillSubmitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnTxt}>Add funds</Text>}
               </TouchableOpacity>
             </View>
           </View>

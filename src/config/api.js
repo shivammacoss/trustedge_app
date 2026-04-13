@@ -4,7 +4,7 @@ import {
   WS_URL as ENV_WS_URL,
 } from '@env';
 
-const DEFAULT_BASE = 'https://api.protrader.today';
+const DEFAULT_BASE = 'https://api.trustedgefx.com';
 
 function trimOrEmpty(v) {
   if (v == null || typeof v !== 'string') return '';

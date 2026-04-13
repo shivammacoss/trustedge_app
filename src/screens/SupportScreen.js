@@ -132,9 +132,9 @@ const SupportScreen = ({ navigation }) => {
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'OPEN': return '#2563EB';
-      case 'IN_PROGRESS': return '#2563EB';
-      case 'RESOLVED': return '#2563EB';
+      case 'OPEN': return '#5a189a';
+      case 'IN_PROGRESS': return '#5a189a';
+      case 'RESOLVED': return '#5a189a';
       case 'CLOSED': return '#666';
       default: return '#666';
     }
@@ -142,9 +142,9 @@ const SupportScreen = ({ navigation }) => {
 
   const getPriorityColor = (priority) => {
     switch (priority) {
-      case 'HIGH': return '#2563EB';
-      case 'MEDIUM': return '#2563EB';
-      case 'LOW': return '#2563EB';
+      case 'HIGH': return '#5a189a';
+      case 'MEDIUM': return '#5a189a';
+      case 'LOW': return '#5a189a';
       default: return '#666';
     }
   };
@@ -344,7 +344,7 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', paddingVertical: 80 },
   emptyTitle: { fontSize: 20, fontWeight: '600', marginTop: 16 },
   emptyText: { color: '#666', fontSize: 14, marginTop: 8 },
-  createBtn: { backgroundColor: '#2563EB', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, marginTop: 24 },
+  createBtn: { backgroundColor: '#5a189a', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, marginTop: 24 },
   createBtnText: { color: '#000', fontSize: 16, fontWeight: '600' },
   
   ticketsList: { padding: 16 },
@@ -370,26 +370,26 @@ const styles = StyleSheet.create({
   
   priorityOptions: { flexDirection: 'row', gap: 8 },
   priorityOption: { flex: 1, padding: 12, borderRadius: 8, alignItems: 'center' },
-  priorityOptionActive: { backgroundColor: '#2563EB' },
+  priorityOptionActive: { backgroundColor: '#5a189a' },
   priorityOptionText: { color: '#666', fontSize: 14, fontWeight: '500' },
   priorityOptionTextActive: { color: '#000' },
   
-  submitBtn: { backgroundColor: '#2563EB', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 24 },
+  submitBtn: { backgroundColor: '#5a189a', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 24 },
   submitBtnDisabled: { opacity: 0.6 },
   submitBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   
   messagesContainer: { maxHeight: 400, marginBottom: 16 },
   messageItem: { padding: 12, borderRadius: 12, marginBottom: 8 },
   userMessage: { marginLeft: 40 },
-  adminMessage: { backgroundColor: '#2563EB20', marginRight: 40 },
+  adminMessage: { backgroundColor: '#5a189a20', marginRight: 40 },
   messageHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
-  messageSender: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
+  messageSender: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
   messageTime: { color: '#666', fontSize: 10 },
   messageText: { fontSize: 14 },
   
   replySection: { flexDirection: 'row', gap: 8, alignItems: 'flex-end' },
   replyInput: { flex: 1, borderRadius: 12, padding: 12, fontSize: 14, maxHeight: 100 },
-  sendBtn: { backgroundColor: '#2563EB', width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center' },
+  sendBtn: { backgroundColor: '#5a189a', width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center' },
 });
 
 export default SupportScreen;

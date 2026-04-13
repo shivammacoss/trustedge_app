@@ -41,7 +41,7 @@ export const AuthProvider = ({ children }) => {
       const data = await response.json();
 
       if (response.ok && data.access_token) {
-        // PTD2 backend returns access_token, user_id, role, expires_at
+        // TrustEdge backend returns access_token, user_id, role, expires_at
         const userInfo = {
           id: data.user_id,
           email: email,
@@ -76,7 +76,7 @@ export const AuthProvider = ({ children }) => {
       const data = await response.json();
 
       if (response.ok && data.access_token) {
-        // PTD2 backend returns access_token, user_id, role, expires_at
+        // TrustEdge backend returns access_token, user_id, role, expires_at
         const userInfo = {
           id: data.user_id,
           email: userData.email,

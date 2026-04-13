@@ -116,7 +116,7 @@ const DashboardScreen = () => {
 
   const fetchMarketWatchNews = async () => {
     try {
-      // Try RSS feed directly (no /news endpoint in PTD2)
+      // Try RSS feed directly (no /news endpoint in TrustEdge)
       const rssResponse = await fetch('https://feeds.content.dowjones.io/public/rss/mw_topstories');
       const rssText = await rssResponse.text();
       const items = parseRSSFeed(rssText);
@@ -191,9 +191,13 @@ const DashboardScreen = () => {
 
   const quickActions = [
     { id: 'trade', icon: 'trending-up', label: 'Trade', screen: 'MainTrading', color: '#22c55e', desc: 'Open Chart' },
-    { id: 'wallet', icon: 'wallet-outline', label: 'Wallet', screen: 'Wallet', color: '#2563EB', desc: 'Deposit / withdraw' },
-    { id: 'wallet', icon: 'card-outline', label: 'Wallet', screen: 'Wallet', color: '#f59e0b', desc: 'Deposit/Withdraw' },
+    { id: 'wallet', icon: 'wallet-outline', label: 'Wallet', screen: 'Wallet', color: '#5a189a', desc: 'Deposit / withdraw' },
+    { id: 'pamm', icon: 'bar-chart-outline', label: 'PAMM', screen: 'Pamm', color: '#06b6d4', desc: 'Fund Managers' },
     { id: 'copy', icon: 'people-circle-outline', label: 'Social', screen: 'Social', color: '#8b5cf6', desc: 'Copy trading' },
+    { id: 'academy', icon: 'school-outline', label: 'Academy', screen: 'Academy', color: '#2196f3', desc: 'Learn Trading' },
+    { id: 'riskcalc', icon: 'calculator-outline', label: 'Calculator', screen: 'RiskCalculator', color: '#f59e0b', desc: 'Risk Tools' },
+    { id: 'calendar', icon: 'calendar-outline', label: 'Calendar', screen: 'EconomicCalendar', color: '#ef4444', desc: 'Econ Events' },
+    { id: 'txnhistory', icon: 'receipt-outline', label: 'History', screen: 'TransactionHistory', color: '#a855f7', desc: 'Transactions' },
     { id: 'ib', icon: 'briefcase-outline', label: 'Business', screen: 'Business', params: { initialTab: 'ib' }, color: '#ec4899', desc: 'Referral & IB' },
     { id: 'support', icon: 'chatbubbles-outline', label: 'Support', screen: 'Support', color: '#06b6d4', desc: 'Help' },
   ];
@@ -269,8 +273,8 @@ const DashboardScreen = () => {
           </Text>
         </View>
         <View style={[styles.quickStatCard, { backgroundColor: colors.bgCard }]}>
-          <View style={[styles.quickStatIcon, { backgroundColor: '#2563EB20' }]}>
-            <Ionicons name="time" size={20} color="#2563EB" />
+          <View style={[styles.quickStatIcon, { backgroundColor: '#5a189a20' }]}>
+            <Ionicons name="time" size={20} color="#5a189a" />
           </View>
           <Text style={[styles.quickStatLabel, { color: colors.textMuted }]}>Margin Used</Text>
           <Text style={[styles.quickStatValue, { color: colors.textPrimary }]}>
@@ -410,8 +414,8 @@ const styles = StyleSheet.create({
   newsContent: { marginHorizontal: 16 },
   newsItem: { borderRadius: 14, padding: 16, marginBottom: 10 },
   newsItemHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  newsCategory: { backgroundColor: '#2563EB20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
-  newsCategoryText: { color: '#2563EB', fontSize: 11, fontWeight: '600' },
+  newsCategory: { backgroundColor: '#5a189a20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  newsCategoryText: { color: '#5a189a', fontSize: 11, fontWeight: '600' },
   newsTitle: { fontSize: 15, fontWeight: '500', lineHeight: 22, marginBottom: 10 },
   newsMeta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   sourceRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },

@@ -194,17 +194,17 @@ const TradingProvider = ({ children, navigation, route }) => {
   }, []);
 
   useEffect(() => {
-    console.log('[PTD2] User state changed:', !!user);
+    console.log('[TrustEdge] User state changed:', !!user);
     if (user) {
-      console.log('[PTD2] User loaded, fetching accounts for user ID:', user.id || user._id);
-      fetchAccounts(user.id || user._id); // PTD2 uses 'id', fallback to '_id'
+      console.log('[TrustEdge] User loaded, fetching accounts for user ID:', user.id || user._id);
+      fetchAccounts(user.id || user._id); // TrustEdge uses 'id', fallback to '_id'
       fetchChallengeAccounts(user.id || user._id);
     } else {
-      console.log('[PTD2] No user - not fetching accounts');
+      console.log('[TrustEdge] No user - not fetching accounts');
     }
   }, [user]);
 
-  // Fetch instruments from backend API (PTD2)
+  // Fetch instruments from backend API (TrustEdge)
   const fetchInstrumentsFromAPI = async () => {
     try {
       const headers = await getJsonAuthHeaders();
@@ -252,7 +252,7 @@ const TradingProvider = ({ children, navigation, route }) => {
     }
   };
 
-  // Fetch all current prices from PTD2
+  // Fetch all current prices from TrustEdge
   const fetchAllPrices = async () => {
     try {
       const headers = await getJsonAuthHeaders();
@@ -328,17 +328,17 @@ const TradingProvider = ({ children, navigation, route }) => {
     }
   }, [route?.params?.challengeAccountId, challengeAccounts]);
 
-  // Fetch challenge accounts - PTD2 doesn't have a separate prop endpoint
+  // Fetch challenge accounts - TrustEdge doesn't have a separate prop endpoint
   // Challenge accounts are regular accounts, skip this for now
   const fetchChallengeAccounts = async (userId) => {
-    // PTD2 doesn't have /prop/my-accounts endpoint
+    // TrustEdge doesn't have /prop/my-accounts endpoint
     // Challenge accounts are handled as regular accounts
     setChallengeAccounts([]);
   };
   
   // Refresh challenge account stats periodically
   const refreshChallengeAccountStats = async () => {
-    // PTD2 doesn't have prop accounts endpoint - skip
+    // TrustEdge doesn't have prop accounts endpoint - skip
     return;
     if (!isChallengeMode || !selectedChallengeAccount || !user) return;
     try {
@@ -357,7 +357,7 @@ const TradingProvider = ({ children, navigation, route }) => {
     }
   };
 
-  // Save selected account ID whenever it changes (PTD2 uses 'id' UUID, not '_id')
+  // Save selected account ID whenever it changes (TrustEdge uses 'id' UUID, not '_id')
   useEffect(() => {
     const accountId = selectedAccount?.id || selectedAccount?._id;
     if (accountId) {
@@ -370,7 +370,7 @@ const TradingProvider = ({ children, navigation, route }) => {
     // Only fetch if user is authenticated and has an active account
     const hasActiveAccount = isChallengeMode ? selectedChallengeAccount : selectedAccount;
     if (user && hasActiveAccount) {
-      console.log('[PTD2] User authenticated and account selected, fetching trading data');
+      console.log('[TrustEdge] User authenticated and account selected, fetching trading data');
       fetchOpenTrades();
       fetchPendingOrders();
       fetchTradeHistory();
@@ -407,24 +407,36 @@ const TradingProvider = ({ children, navigation, route }) => {
     }
   }, [user, selectedAccount, isChallengeMode, selectedChallengeAccount]);
 
+  // Refs to batch price updates and avoid "Maximum update depth exceeded"
+  const livePricesRef = useRef({});
+  const priceFlushTimer = useRef(null);
+
   // WebSocket connection for real-time prices
   useEffect(() => {
     // Connect to WebSocket
     socketService.connect();
-    
-    // Subscribe to price updates via WebSocket - tick-to-tick for fastest updates
-    const unsubscribe = socketService.addPriceListener((prices) => {
-      if (prices && Object.keys(prices).length > 0) {
-        setLivePrices(prev => ({ ...prev, ...prices }));
 
-        setInstruments(prev => prev.map(inst => {
+    // Flush buffered prices into state at most once per 500ms
+    const flushPrices = () => {
+      const snapshot = livePricesRef.current;
+      if (!snapshot || Object.keys(snapshot).length === 0) return;
+
+      setLivePrices(snapshot);
+
+      setInstruments(prev => {
+        let changed = false;
+        const next = prev.map(inst => {
           const key = inst.symbol;
-          const price = prices[key] ?? prices[String(key || '').toUpperCase()];
-          const bid = Number(price?.bid);
-          const ask = Number(price?.ask);
-          if (price && ((Number.isFinite(bid) && bid > 0) || (Number.isFinite(ask) && ask > 0))) {
+          const price = snapshot[key] ?? snapshot[String(key || '').toUpperCase()];
+          if (!price) return inst;
+          const bid = Number(price.bid);
+          const ask = Number(price.ask);
+          if ((Number.isFinite(bid) && bid > 0) || (Number.isFinite(ask) && ask > 0)) {
             const bidN = Number.isFinite(bid) && bid > 0 ? bid : ask;
             const askN = Number.isFinite(ask) && ask > 0 ? ask : bidN;
+            // Only create a new object when the price actually changed
+            if (inst.bid === bidN && inst.ask === askN) return inst;
+            changed = true;
             return {
               ...inst,
               bid: bidN,
@@ -435,7 +447,23 @@ const TradingProvider = ({ children, navigation, route }) => {
             };
           }
           return inst;
-        }));
+        });
+        return changed ? next : prev;
+      });
+    };
+
+    // Subscribe to price updates via WebSocket - buffer into ref, flush throttled
+    const unsubscribe = socketService.addPriceListener((prices) => {
+      if (prices && Object.keys(prices).length > 0) {
+        livePricesRef.current = { ...livePricesRef.current, ...prices };
+
+        // Schedule a flush if one isn't already pending
+        if (!priceFlushTimer.current) {
+          priceFlushTimer.current = setTimeout(() => {
+            priceFlushTimer.current = null;
+            flushPrices();
+          }, 500);
+        }
       }
     });
     
@@ -453,29 +481,30 @@ const TradingProvider = ({ children, navigation, route }) => {
     
     return () => {
       unsubscribe();
+      if (priceFlushTimer.current) clearTimeout(priceFlushTimer.current);
       clearInterval(newsInterval);
       clearInterval(slTpInterval);
     };
   }, []);
 
   const fetchAdminSpreads = async () => {
-    // PTD2 doesn't have /charges/spreads endpoint - spreads are per-instrument
+    // TrustEdge doesn't have /charges/spreads endpoint - spreads are per-instrument
     setAdminSpreads({});
   };
 
   const fetchMarketWatchNews = async () => {
-    // PTD2 doesn't have /news/marketwatch endpoint
+    // TrustEdge doesn't have /news/marketwatch endpoint
     setMarketWatchNews([]);
     setLoadingNews(false);
   };
 
   // Check SL/TP for all open trades
-  // PTD2 backend handles SL/TP server-side, no need to check from mobile
+  // TrustEdge backend handles SL/TP server-side, no need to check from mobile
   const checkSlTp = async () => {
     try {
-      // PTD2 handles SL/TP server-side - just refresh open trades periodically
+      // TrustEdge handles SL/TP server-side - just refresh open trades periodically
       if (!Array.isArray(openTrades) || openTrades.length === 0) return;
-      return; // Skip - PTD2 handles this
+      return; // Skip - TrustEdge handles this
       const data = {};
       
       // Debug log
@@ -556,11 +585,11 @@ const TradingProvider = ({ children, navigation, route }) => {
 
   const fetchAccounts = async (userId, forceSelectFirst = false) => {
     try {
-      console.log('[PTD2] Fetching accounts from backend');
+      console.log('[TrustEdge] Fetching accounts from backend');
       const token = await SecureStore.getItemAsync('token');
       
       if (!token) {
-        console.log('[PTD2] No token found, redirecting to login');
+        console.log('[TrustEdge] No token found, redirecting to login');
         navigation.replace('Login');
         return;
       }
@@ -572,17 +601,17 @@ const TradingProvider = ({ children, navigation, route }) => {
         }
       });
       const data = await res.json();
-      console.log('[PTD2] Accounts response:', data);
+      console.log('[TrustEdge] Accounts response:', data);
       
       const rawList = data.items || data || [];
       const normalized = Array.isArray(rawList) ? rawList.map(normalizeTradingAccountRow) : [];
-      const liveOnly = normalized.filter((a) => !isDemoTradingAccount(a));
-      const accountsList = liveOnly.length > 0 ? liveOnly : normalized;
+      // Show both demo and live in the picker (matches web)
+      const accountsList = normalized;
 
       setAccounts(accountsList);
       
       if (accountsList.length > 0) {
-        console.log('[PTD2] Accounts loaded (live-first):', accountsList.length);
+        console.log('[TrustEdge] Accounts loaded (live-first):', accountsList.length);
 
         let accountToSelect = null;
         const savedAccountId = await SecureStore.getItemAsync('selectedAccountId');
@@ -591,20 +620,20 @@ const TradingProvider = ({ children, navigation, route }) => {
             (a) => String(a.id || a._id) === String(savedAccountId)
           );
           if (accountToSelect) {
-            console.log('[PTD2] Restoring saved account:', accountToSelect.account_number || accountToSelect.id);
+            console.log('[TrustEdge] Restoring saved account:', accountToSelect.account_number || accountToSelect.id);
           }
         }
 
         if (!accountToSelect) {
           accountToSelect = accountsList[0];
-          console.log('[PTD2] Auto-selecting first account:', accountToSelect.account_number || accountToSelect.id);
+          console.log('[TrustEdge] Auto-selecting first account:', accountToSelect.account_number || accountToSelect.id);
         }
 
         setSelectedAccount(accountToSelect);
         const idToSave = accountToSelect.id || accountToSelect._id;
         if (idToSave) SecureStore.setItemAsync('selectedAccountId', idToSave);
       } else {
-        console.log('[PTD2] No accounts available');
+        console.log('[TrustEdge] No accounts available');
         setAccounts([]);
       }
     } catch (e) {
@@ -618,16 +647,16 @@ const TradingProvider = ({ children, navigation, route }) => {
       ? (selectedChallengeAccount.id || selectedChallengeAccount._id)
       : (selectedAccount?.id || selectedAccount?._id);
     if (!accountId) {
-      console.log('[PTD2] No account ID for fetchOpenTrades');
+      console.log('[TrustEdge] No account ID for fetchOpenTrades');
       return;
     }
     try {
       const token = await SecureStore.getItemAsync('token');
-      console.log('[PTD2] Token available for open trades:', !!token);
-      console.log('[PTD2] Account ID for open trades:', accountId);
+      console.log('[TrustEdge] Token available for open trades:', !!token);
+      console.log('[TrustEdge] Account ID for open trades:', accountId);
       
       if (!token) {
-        console.log('[PTD2] No token - skipping open trades fetch');
+        console.log('[TrustEdge] No token - skipping open trades fetch');
         return;
       }
       
@@ -638,7 +667,7 @@ const TradingProvider = ({ children, navigation, route }) => {
         }
       });
       const data = await res.json();
-      console.log('[PTD2] Open positions response:', data);
+      console.log('[TrustEdge] Open positions response:', data);
       // Map backend snake_case to camelCase expected by UI
       const rawList = Array.isArray(data.items) ? data.items : Array.isArray(data) ? data : [];
       const mappedTrades = rawList.map(t => ({
@@ -670,15 +699,15 @@ const TradingProvider = ({ children, navigation, route }) => {
       ? (selectedChallengeAccount.id || selectedChallengeAccount._id)
       : (selectedAccount?.id || selectedAccount?._id);
     if (!accountId) {
-      console.log('[PTD2] No account ID for fetchPendingOrders');
+      console.log('[TrustEdge] No account ID for fetchPendingOrders');
       return;
     }
     try {
       const token = await SecureStore.getItemAsync('token');
-      console.log('[PTD2] Token available for pending orders:', !!token);
+      console.log('[TrustEdge] Token available for pending orders:', !!token);
       
       if (!token) {
-        console.log('[PTD2] No token - skipping pending orders fetch');
+        console.log('[TrustEdge] No token - skipping pending orders fetch');
         return;
       }
       
@@ -689,7 +718,7 @@ const TradingProvider = ({ children, navigation, route }) => {
         }
       });
       const data = await res.json();
-      console.log('[PTD2] Pending orders response:', data);
+      console.log('[TrustEdge] Pending orders response:', data);
       // Map backend snake_case to camelCase expected by UI
       const rawOrders = Array.isArray(data.items) ? data.items : Array.isArray(data) ? data : [];
       const mappedOrders = rawOrders.map(o => ({
@@ -716,15 +745,15 @@ const TradingProvider = ({ children, navigation, route }) => {
       ? (selectedChallengeAccount.id || selectedChallengeAccount._id)
       : (selectedAccount?.id || selectedAccount?._id);
     if (!accountId) {
-      console.log('[PTD2] No account ID for fetchTradeHistory');
+      console.log('[TrustEdge] No account ID for fetchTradeHistory');
       return;
     }
     try {
       const token = await SecureStore.getItemAsync('token');
-      console.log('[PTD2] Token available for trade history:', !!token);
+      console.log('[TrustEdge] Token available for trade history:', !!token);
       
       if (!token) {
-        console.log('[PTD2] No token - skipping trade history fetch');
+        console.log('[TrustEdge] No token - skipping trade history fetch');
         return;
       }
       
@@ -736,7 +765,7 @@ const TradingProvider = ({ children, navigation, route }) => {
         }
       });
       const data = await res.json();
-      console.log('[PTD2] Trade history response:', data);
+      console.log('[TrustEdge] Trade history response:', data);
       
       // Backend returns { items: [...] } with snake_case fields
       // UI expects camelCase fields, so map them here
@@ -784,17 +813,17 @@ const TradingProvider = ({ children, navigation, route }) => {
       return;
     }
     
-    // For regular accounts, fetch from PTD2 API
+    // For regular accounts, fetch from TrustEdge API
     const accountId = selectedAccount?.id || selectedAccount?._id;
     if (!accountId) {
-      console.log('[PTD2] No account ID for fetchAccountSummary');
+      console.log('[TrustEdge] No account ID for fetchAccountSummary');
       return;
     }
     
     try {
       const token = await SecureStore.getItemAsync('token');
       if (!token) {
-        console.log('[PTD2] No token for fetchAccountSummary');
+        console.log('[TrustEdge] No token for fetchAccountSummary');
         return;
       }
       
@@ -807,12 +836,12 @@ const TradingProvider = ({ children, navigation, route }) => {
       
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        console.log('[PTD2] Account summary fetch failed:', res.status, errData?.detail || errData);
+        console.log('[TrustEdge] Account summary fetch failed:', res.status, errData?.detail || errData);
         return;
       }
       
       const data = await res.json();
-      console.log('[PTD2] Account summary:', data);
+      console.log('[TrustEdge] Account summary:', data);
       
       // Ensure all values are numbers to prevent toFixed crashes
       setAccountSummary({
@@ -824,7 +853,7 @@ const TradingProvider = ({ children, navigation, route }) => {
         floatingPnl: Number(data.unrealized_pnl || 0)
       });
     } catch (e) {
-      console.error('[PTD2] Error fetching account summary:', e);
+      console.error('[TrustEdge] Error fetching account summary:', e);
       // Set safe defaults to prevent crashes
       setAccountSummary({
         balance: 0,
@@ -1038,6 +1067,80 @@ const HomeTab = ({ navigation }) => {
   
   // Market data tabs state
   const [marketTab, setMarketTab] = useState('watchlist'); // 'watchlist', 'gainers', 'losers'
+
+  // Account picker modal state
+  const [showAccountPicker, setShowAccountPicker] = useState(false);
+
+  // Main wallet balance + unread count (top nav, polled — not deps-based to avoid loops)
+  const [walletBal, setWalletBal] = useState(0);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const fetchAll = async () => {
+      try {
+        const token = await SecureStore.getItemAsync('token');
+        if (!token || !mounted) return;
+        const headers = { Authorization: `Bearer ${token}` };
+
+        // Wallet + accounts in parallel — derive wallet-only if backend doesn't expose it directly
+        const [wRes, aRes, nRes] = await Promise.all([
+          fetch(`${API_URL}/wallet/summary`, { headers }),
+          fetch(`${API_URL}/accounts`, { headers }),
+          fetch(`${API_URL}/notifications?page=1&per_page=50`, { headers }),
+        ]);
+
+        if (!mounted) return;
+
+        const wData = await wRes.json().catch(() => ({}));
+        const aData = await aRes.json().catch(() => ({}));
+        const nData = await nRes.json().catch(() => ({}));
+
+        let bal = wData.main_wallet_balance ?? wData.wallet_balance ?? wData.main_balance;
+        if (bal == null) {
+          const total = Number(wData.balance ?? wData.total ?? 0);
+          const acctList = Array.isArray(aData.items) ? aData.items : (Array.isArray(aData) ? aData : []);
+          const acctTotal = acctList.reduce((s, a) => s + Number(a?.balance || 0), 0);
+          bal = total - acctTotal;
+        }
+        if (mounted) setWalletBal(Math.max(0, Number(bal) || 0));
+
+        const list = nData.items || nData.notifications || [];
+        const count = Array.isArray(list)
+          ? list.filter((n) => !(n.is_read || n.read)).length
+          : 0;
+        if (mounted) setUnreadCount(count);
+      } catch (e) {}
+    };
+
+    fetchAll();
+    const id = setInterval(fetchAll, 15000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  // Compute user initials for the avatar pill (cheap, inline)
+  const u = ctx.user || {};
+  const fn = (u.first_name || u.firstName || '').trim();
+  const ln = (u.last_name || u.lastName || '').trim();
+  const userInitials = (fn || ln)
+    ? (((fn[0] || '') + (ln[0] || '')).toUpperCase() || '?')
+    : ((u.email || '').trim().slice(0, 2).toUpperCase() || '?');
+
+  const switchToAccount = async (account) => {
+    if (!account) return;
+    const aid = account.id || account._id;
+    ctx.setSelectedAccount(account);
+    try {
+      await SecureStore.setItemAsync('selectedAccountId', aid);
+    } catch (e) {}
+    setShowAccountPicker(false);
+    if (ctx.fetchAccountSummary) ctx.fetchAccountSummary();
+    if (ctx.fetchOpenTrades) ctx.fetchOpenTrades();
+  };
 
   useEffect(() => {
     const lp = ctx.livePrices || {};
@@ -1253,75 +1356,109 @@ const HomeTab = ({ navigation }) => {
       style={[styles.container, { backgroundColor: colors.bgPrimary }]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
     >
-      {/* Vantage-style header */}
-      <View style={[styles.vantageHeader, { paddingTop: insets.top + 8, backgroundColor: colors.bgPrimary }]}>
-        <View style={styles.vantageHeaderLeft}>
-          <View style={[styles.vantageLogoMark, { backgroundColor: colors.primary }]}>
-            <Text style={styles.vantageLogoLetter}>P</Text>
-          </View>
-          <TouchableOpacity
-            style={[styles.liveChip, { backgroundColor: colors.bgCard, borderColor: colors.border }]}
-            onPress={() => parentNav?.navigate('Wallet')}
-            activeOpacity={0.8}
-          >
-            <Text style={[styles.liveChipText, { color: colors.textPrimary }]}>
-              {ctx.isChallengeMode ? 'Challenge' : 'Live'}
-            </Text>
-            <Ionicons name="chevron-down" size={14} color={colors.textMuted} />
-          </TouchableOpacity>
-        </View>
-        <View style={styles.vantageHeaderRight}>
-          <TouchableOpacity style={styles.headerIconBtn} onPress={() => navigation.navigate('Markets')}>
-            <Ionicons name="search-outline" size={22} color={colors.textPrimary} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.headerIconBtn} onPress={() => parentNav?.navigate('Support')}>
-            <Ionicons name="chatbubble-ellipses-outline" size={22} color={colors.textPrimary} />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <TouchableOpacity
-        style={[styles.verifyStrip, { backgroundColor: isDark ? 'rgba(251, 146, 60, 0.14)' : 'rgba(234, 88, 12, 0.12)' }]}
-        onPress={() => parentNav?.navigate('Profile')}
-        activeOpacity={0.85}
+      {/* Top nav bar — hamburger | wallet pill | bell | avatar */}
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingTop: insets.top + 8,
+          paddingHorizontal: 14,
+          paddingBottom: 12,
+          gap: 10,
+          backgroundColor: colors.bgPrimary,
+        }}
       >
-        <Text style={[styles.verifyStripText, { color: colors.textPrimary }]} numberOfLines={1}>
-          Complete profile & verification
-        </Text>
-        <Text style={styles.verifyStripCta}>Verify</Text>
-        <Ionicons name="chevron-forward" size={16} color="#fb923c" />
-      </TouchableOpacity>
-
-      {/* Hero — equity / setup (light & dark) */}
-      <View style={[styles.heroBlock, { backgroundColor: colors.bgPrimary }]}>
-        <Text style={[styles.heroEquityLabel, { color: colors.textMuted }]}>Equity</Text>
-        <Text style={[styles.heroEquityValue, { color: colors.textPrimary }]}>
-          ${Number(
-            ctx.isChallengeMode
-              ? (ctx.realTimeEquity || 0)
-              : (ctx.realTimeEquity ?? ctx.accountSummary?.equity ?? 0)
-          ).toFixed(2)}
-        </Text>
-        {!ctx.selectedAccount && !ctx.isChallengeMode ? (
-          <>
-            <Text style={[styles.heroHeadline, { color: colors.textPrimary }]}>Set up your account to start trading</Text>
-            <Text style={[styles.heroSub, { color: colors.textSecondary }]}>Access global FX, metals, crypto & indices</Text>
-            <TouchableOpacity
-              style={[styles.heroSetupBtn, { backgroundColor: isDark ? '#f1f5f9' : colors.primary }]}
-              onPress={() => parentNav?.navigate('Wallet')}
-            >
-              <Text style={[styles.heroSetupBtnText, { color: isDark ? '#0f172a' : '#ffffff' }]}>Add funds</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          <Text style={[styles.heroWelcome, { color: colors.textSecondary }]}>
-            Welcome back, {ctx.user?.firstName || ctx.user?.first_name || 'Trader'}
+        {/* Wallet pill */}
+        <TouchableOpacity
+          onPress={() => parentNav?.navigate('Wallet')}
+          activeOpacity={0.85}
+          style={{
+            flex: 1,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+            paddingHorizontal: 16,
+            height: 44,
+            borderRadius: 22,
+            borderWidth: 1.5,
+            borderColor: colors.success,
+            backgroundColor: colors.success + '15',
+          }}
+        >
+          <Ionicons name="wallet-outline" size={18} color={colors.success} />
+          <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '800' }}>
+            ${Number(walletBal).toFixed(2)}
           </Text>
-        )}
+          <Ionicons name="chevron-down" size={14} color={colors.success} />
+        </TouchableOpacity>
+
+        {/* Notification bell with badge */}
+        <TouchableOpacity
+          onPress={() => parentNav?.navigate('Notifications')}
+          activeOpacity={0.75}
+          style={{
+            width: 44,
+            height: 44,
+            borderRadius: 22,
+            backgroundColor: colors.bgCard,
+            borderWidth: 1,
+            borderColor: colors.border,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Ionicons name="notifications-outline" size={20} color={colors.textPrimary} />
+          {unreadCount > 0 && (
+            <View
+              style={{
+                position: 'absolute',
+                top: -2,
+                right: -2,
+                minWidth: 18,
+                height: 18,
+                paddingHorizontal: 4,
+                borderRadius: 9,
+                backgroundColor: colors.error,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderWidth: 2,
+                borderColor: colors.bgPrimary,
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </Text>
+            </View>
+          )}
+        </TouchableOpacity>
+
+        {/* User avatar */}
+        <TouchableOpacity
+          onPress={() => parentNav?.navigate('Profile')}
+          activeOpacity={0.75}
+          style={{
+            width: 44,
+            height: 44,
+            borderRadius: 22,
+            backgroundColor: colors.success,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Text style={{ color: '#000', fontSize: 13, fontWeight: '800' }}>{userInitials}</Text>
+        </TouchableOpacity>
       </View>
 
-      {/* Quick row — Vantage-style 4 tiles */}
+
+      {/* Quick row — Vantage-style tiles */}
       <View style={[styles.vantageQuickRow, { borderColor: colors.border }]}>
+        <TouchableOpacity style={styles.vantageQuickItem} onPress={() => parentNav?.navigate('Accounts')}>
+          <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
+            <Ionicons name="briefcase-outline" size={22} color={colors.primary} />
+          </View>
+          <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>Account</Text>
+        </TouchableOpacity>
         <TouchableOpacity style={styles.vantageQuickItem} onPress={() => parentNav?.navigate('Portfolio')}>
           <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
             <Ionicons name="pie-chart-outline" size={22} color={colors.primary} />
@@ -1645,6 +1782,183 @@ const HomeTab = ({ navigation }) => {
         </View>
       </Modal>
 
+      {/* Account Picker Modal — switch active account or open new one */}
+      <Modal
+        visible={showAccountPicker}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowAccountPicker(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' }}>
+          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setShowAccountPicker(false)} />
+          <View style={{ backgroundColor: colors.bgCard, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 30, maxHeight: '80%' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 18, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }}>
+              <Text style={{ color: colors.textPrimary, fontSize: 17, fontWeight: '700' }}>Select Account</Text>
+              <TouchableOpacity onPress={() => setShowAccountPicker(false)}>
+                <Ionicons name="close" size={24} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ maxHeight: 460 }}>
+              {ctx.accounts && ctx.accounts.length > 0 ? (
+                <>
+                  <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 6 }}>
+                    Trading Accounts
+                  </Text>
+                  {ctx.accounts.map((account) => {
+                    const aid = account.id || account._id;
+                    const isActive = !ctx.isChallengeMode && (ctx.selectedAccount?.id === aid || ctx.selectedAccount?._id === aid);
+                    const demo = isDemoTradingAccount(account);
+                    return (
+                      <TouchableOpacity
+                        key={aid}
+                        activeOpacity={0.85}
+                        onPress={() => {
+                          ctx.setIsChallengeMode(false);
+                          switchToAccount(account);
+                        }}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          paddingHorizontal: 18,
+                          paddingVertical: 14,
+                          borderBottomWidth: StyleSheet.hairlineWidth,
+                          borderBottomColor: colors.border,
+                          backgroundColor: isActive ? colors.accent + '10' : 'transparent',
+                          borderLeftWidth: 3,
+                          borderLeftColor: isActive ? colors.accent : 'transparent',
+                        }}
+                      >
+                        <View style={{
+                          width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
+                          backgroundColor: isActive ? colors.accent + '25' : colors.bgSecondary,
+                        }}>
+                          <Ionicons name="briefcase" size={18} color={isActive ? colors.accent : colors.textMuted} />
+                        </View>
+                        <View style={{ flex: 1, marginLeft: 12 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>
+                              {account.account_number || account.accountId || String(aid).slice(0, 8)}
+                            </Text>
+                            <View style={{
+                              paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3,
+                              backgroundColor: demo ? colors.warning + '25' : colors.success + '25',
+                            }}>
+                              <Text style={{
+                                fontSize: 8, fontWeight: '800',
+                                color: demo ? colors.warning : colors.success,
+                              }}>
+                                {demo ? 'DEMO' : 'LIVE'}
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>
+                            {account.account_group?.name || account.accountTypeId?.name || account.accountType || 'Standard'}
+                            {' • 1:' + (String(account.leverage || '').replace(/^1:/, '') || '100')}
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: 'flex-end' }}>
+                          <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>
+                            ${Number(account.balance || 0).toFixed(2)}
+                          </Text>
+                          {isActive && (
+                            <Ionicons name="checkmark-circle" size={16} color={colors.accent} style={{ marginTop: 2 }} />
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </>
+              ) : null}
+
+              {ctx.challengeAccounts && ctx.challengeAccounts.length > 0 && (
+                <>
+                  <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6, paddingHorizontal: 18, paddingTop: 18, paddingBottom: 6 }}>
+                    Challenge Accounts
+                  </Text>
+                  {ctx.challengeAccounts.filter((a) => a.status === 'ACTIVE').map((account) => {
+                    const aid = account.id || account._id;
+                    const isActive = ctx.isChallengeMode && (ctx.selectedChallengeAccount?.id === aid || ctx.selectedChallengeAccount?._id === aid);
+                    return (
+                      <TouchableOpacity
+                        key={aid}
+                        activeOpacity={0.85}
+                        onPress={() => {
+                          ctx.setIsChallengeMode(true);
+                          ctx.setSelectedChallengeAccount(account);
+                          setShowAccountPicker(false);
+                        }}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          paddingHorizontal: 18,
+                          paddingVertical: 14,
+                          borderBottomWidth: StyleSheet.hairlineWidth,
+                          borderBottomColor: colors.border,
+                          backgroundColor: isActive ? '#5a189a15' : 'transparent',
+                          borderLeftWidth: 3,
+                          borderLeftColor: isActive ? '#5a189a' : 'transparent',
+                        }}
+                      >
+                        <View style={{
+                          width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
+                          backgroundColor: isActive ? '#5a189a30' : '#5a189a15',
+                        }}>
+                          <Ionicons name="trophy" size={18} color="#5a189a" />
+                        </View>
+                        <View style={{ flex: 1, marginLeft: 12 }}>
+                          <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>{account.accountId}</Text>
+                          <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>
+                            {account.challengeId?.name || 'Challenge'} • Step {account.currentStep || 1}
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: 'flex-end' }}>
+                          <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>
+                            ${Number(account.currentBalance || account.balance || 0).toFixed(2)}
+                          </Text>
+                          {isActive && (
+                            <Ionicons name="checkmark-circle" size={16} color="#5a189a" style={{ marginTop: 2 }} />
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </>
+              )}
+
+              {(!ctx.accounts || ctx.accounts.length === 0) && (!ctx.challengeAccounts || ctx.challengeAccounts.length === 0) && (
+                <View style={{ padding: 30, alignItems: 'center' }}>
+                  <Ionicons name="wallet-outline" size={48} color={colors.textMuted} />
+                  <Text style={{ color: colors.textMuted, marginTop: 10 }}>No accounts available</Text>
+                </View>
+              )}
+            </ScrollView>
+
+            {/* Open new account CTA */}
+            <View style={{ padding: 16, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowAccountPicker(false);
+                  parentNav?.navigate('Accounts', { action: 'open' });
+                }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  paddingVertical: 14,
+                  borderRadius: 12,
+                  backgroundColor: colors.accent,
+                }}
+              >
+                <Ionicons name="add-circle-outline" size={20} color="#fff" />
+                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>Open New Account</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <View style={{ height: 100 }} />
     </ScrollView>
   );
@@ -1816,8 +2130,8 @@ const QuotesTab = ({ navigation }) => {
       const finalBid = (orderType === 'PENDING' && pendingPrice) ? parseFloat(pendingPrice) : parseFloat(bid);
       const finalAsk = (orderType === 'PENDING' && pendingPrice) ? parseFloat(pendingPrice) : parseFloat(ask);
       
-      // Build order data for PTD2 backend
-      // PTD2 uses account.id (UUID) not _id
+      // Build order data for TrustEdge backend
+      // TrustEdge uses account.id (UUID) not _id
       const tradingAccountId = ctx.isChallengeMode && ctx.selectedChallengeAccount 
         ? (ctx.selectedChallengeAccount.id || ctx.selectedChallengeAccount._id)
         : (ctx.selectedAccount.id || ctx.selectedAccount._id);
@@ -1825,12 +2139,12 @@ const QuotesTab = ({ navigation }) => {
       const orderData = {
         account_id: tradingAccountId,
         symbol: selectedInstrument.symbol,
-        side: effectiveSide.toLowerCase(), // PTD2 expects lowercase: "buy" or "sell"
+        side: effectiveSide.toLowerCase(), // TrustEdge expects lowercase: "buy" or "sell"
         order_type: orderType === 'MARKET' ? 'market' : pendingType.toLowerCase(), // "market", "limit", or "stop"
         lots: parseFloat(volume) || 0.01,
       };
       
-      // Add SL/TP if set (PTD2 uses stop_loss and take_profit)
+      // Add SL/TP if set (TrustEdge uses stop_loss and take_profit)
       if (effectiveStopLoss) orderData.stop_loss = parseFloat(effectiveStopLoss);
       if (takeProfit) orderData.take_profit = parseFloat(takeProfit);
       
@@ -1839,7 +2153,7 @@ const QuotesTab = ({ navigation }) => {
         orderData.price = parseFloat(pendingPrice);
       }
 
-      console.log('PTD2 Trade order data:', JSON.stringify(orderData, null, 2));
+      console.log('TrustEdge Trade order data:', JSON.stringify(orderData, null, 2));
       
       // Get token for authentication
       const token = await SecureStore.getItemAsync('token');
@@ -1853,7 +2167,7 @@ const QuotesTab = ({ navigation }) => {
         body: JSON.stringify(orderData)
       });
       const data = await res.json();
-      console.log('PTD2 Trade response:', res.status, JSON.stringify(data, null, 2));
+      console.log('TrustEdge Trade response:', res.status, JSON.stringify(data, null, 2));
       
       if (res.ok && data) {
         const isChallengeTradeMsg = data.isChallengeAccount ? ' (Challenge)' : '';
@@ -1866,7 +2180,7 @@ const QuotesTab = ({ navigation }) => {
         ctx.fetchPendingOrders();
         ctx.fetchAccountSummary();
       } else {
-        // PTD2 backend uses 'detail' (FastAPI standard), fallback to 'message'
+        // TrustEdge backend uses 'detail' (FastAPI standard), fallback to 'message'
         const errMsg = data.detail || data.message || 'Failed to place order';
         console.error('Trade failed:', errMsg, data);
         if (data.code === 'DRAWDOWN_BREACH' || data.code === 'DAILY_DRAWDOWN_BREACH') {
@@ -2302,7 +2616,7 @@ const QuotesTab = ({ navigation }) => {
                     placeholder="Optional"
                     placeholderTextColor={colors.textMuted}
                     keyboardType="numbers-and-punctuation"
-                    selectionColor="#2563EB"
+                    selectionColor="#5a189a"
                     onFocus={() => {
                       setTimeout(() => {
                         orderScrollRef.current?.scrollToEnd({ animated: true });
@@ -2319,7 +2633,7 @@ const QuotesTab = ({ navigation }) => {
                     placeholder="Optional"
                     placeholderTextColor={colors.textMuted}
                     keyboardType="numbers-and-punctuation"
-                    selectionColor="#2563EB"
+                    selectionColor="#5a189a"
                     onFocus={() => {
                       setTimeout(() => {
                         orderScrollRef.current?.scrollToEnd({ animated: true });
@@ -2408,7 +2722,7 @@ const QuotesTab = ({ navigation }) => {
                   {ctx.challengeAccounts.filter(acc => acc.status === 'ACTIVE').map(account => (
                     <TouchableOpacity 
                       key={account._id}
-                      style={[styles.accountPickerItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border, borderLeftWidth: 3, borderLeftColor: '#2563EB' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && styles.accountPickerItemActive]}
+                      style={[styles.accountPickerItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border, borderLeftWidth: 3, borderLeftColor: '#5a189a' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && styles.accountPickerItemActive]}
                       onPress={() => { 
                         ctx.setIsChallengeMode(true);
                         ctx.setSelectedChallengeAccount(account); 
@@ -2416,8 +2730,8 @@ const QuotesTab = ({ navigation }) => {
                       }}
                     >
                       <View style={styles.accountPickerItemLeft}>
-                        <View style={[styles.accountPickerIcon, { backgroundColor: '#2563EB20' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && { backgroundColor: '#2563EB40' }]}>
-                          <Ionicons name="trophy" size={20} color="#2563EB" />
+                        <View style={[styles.accountPickerIcon, { backgroundColor: '#5a189a20' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && { backgroundColor: '#5a189a40' }]}>
+                          <Ionicons name="trophy" size={20} color="#5a189a" />
                         </View>
                         <View>
                           <Text style={[styles.accountPickerNumber, { color: colors.textPrimary }]}>{account.accountId}</Text>
@@ -2427,7 +2741,7 @@ const QuotesTab = ({ navigation }) => {
                       <View style={styles.accountPickerItemRight}>
                         <Text style={[styles.accountPickerBalance, { color: colors.textPrimary }]}>${(account.currentBalance || account.balance || 0).toFixed(2)}</Text>
                         {ctx.isChallengeMode && (ctx.selectedChallengeAccount?.id === account.id || ctx.selectedChallengeAccount?._id === account._id) && (
-                          <Ionicons name="checkmark-circle" size={20} color="#2563EB" />
+                          <Ionicons name="checkmark-circle" size={20} color="#5a189a" />
                         )}
                       </View>
                     </TouchableOpacity>
@@ -2611,7 +2925,7 @@ const TradeTab = () => {
         }
       });
       const data = await res.json();
-      console.log('[PTD2] Close position response:', data);
+      console.log('[TrustEdge] Close position response:', data);
       
       if (res.ok) {
         const pnl = data.profit || 0;
@@ -2679,7 +2993,7 @@ const TradeTab = () => {
     let closedTrades = 0;
     let cancelledOrders = 0;
 
-    // Close all open trades via PTD2
+    // Close all open trades via TrustEdge
     const token = await SecureStore.getItemAsync('token');
     const safeOpenTrades = Array.isArray(ctx.openTrades) ? ctx.openTrades : [];
     for (const trade of safeOpenTrades) {
@@ -2695,7 +3009,7 @@ const TradeTab = () => {
       }
     }
 
-    // Cancel all pending orders via PTD2
+    // Cancel all pending orders via TrustEdge
     const safePendingOrders = Array.isArray(ctx.pendingOrders) ? ctx.pendingOrders : [];
     for (const order of safePendingOrders) {
       try {
@@ -2749,7 +3063,7 @@ const TradeTab = () => {
         })
       });
       const data = await res.json();
-      console.log('[PTD2] SL/TP update response:', data);
+      console.log('[TrustEdge] SL/TP update response:', data);
 
       if (res.ok) {
         toast?.showToast('SL/TP updated successfully', 'success');
@@ -3215,7 +3529,7 @@ const TradeTab = () => {
                 returnKeyType="next"
                 autoCorrect={false}
                 autoCapitalize="none"
-                selectionColor="#2563EB"
+                selectionColor="#5a189a"
                 editable={true}
               />
             </View>
@@ -3232,7 +3546,7 @@ const TradeTab = () => {
                 returnKeyType="done"
                 autoCorrect={false}
                 autoCapitalize="none"
-                selectionColor="#2563EB"
+                selectionColor="#5a189a"
                 editable={true}
                 onSubmitEditing={updateSlTp}
               />
@@ -3330,7 +3644,7 @@ const TradeTab = () => {
                   <Text style={[styles.detailSectionTitle, { color: colors.primary }]}>Stop Loss / Take Profit</Text>
                   <View style={[styles.detailRow, { borderBottomColor: colors.border }]}>
                     <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Stop Loss</Text>
-                    <Text style={[styles.detailValue, { color: (detailTrade.sl || detailTrade.stopLoss) ? '#2563EB' : colors.textMuted }]}>
+                    <Text style={[styles.detailValue, { color: (detailTrade.sl || detailTrade.stopLoss) ? '#5a189a' : colors.textMuted }]}>
                       {detailTrade.sl || detailTrade.stopLoss || 'Not Set'}
                     </Text>
                   </View>
@@ -3389,7 +3703,7 @@ const TradeTab = () => {
                     style={styles.detailEditBtn} 
                     onPress={() => { setShowTradeDetails(false); openSlTpModal(detailTrade); }}
                   >
-                    <Ionicons name="pencil" size={18} color="#2563EB" />
+                    <Ionicons name="pencil" size={18} color="#5a189a" />
                     <Text style={styles.detailEditText}>Edit SL/TP</Text>
                   </TouchableOpacity>
                   <TouchableOpacity 
@@ -3410,8 +3724,8 @@ const TradeTab = () => {
       <Modal visible={showCloseAllModal} animationType="fade" transparent onRequestClose={() => setShowCloseAllModal(false)}>
         <View style={styles.confirmModalOverlay}>
           <View style={styles.confirmModalContent}>
-            <View style={[styles.confirmModalIcon, { backgroundColor: closeAllType === 'profit' ? '#2563EB20' : closeAllType === 'loss' ? '#2563EB20' : '#2563EB20' }]}>
-              <Ionicons name={closeAllType === 'profit' ? 'trending-up' : closeAllType === 'loss' ? 'trending-down' : 'close-circle'} size={32} color={closeAllType === 'profit' ? '#2563EB' : closeAllType === 'loss' ? '#2563EB' : '#2563EB'} />
+            <View style={[styles.confirmModalIcon, { backgroundColor: closeAllType === 'profit' ? '#5a189a20' : closeAllType === 'loss' ? '#5a189a20' : '#5a189a20' }]}>
+              <Ionicons name={closeAllType === 'profit' ? 'trending-up' : closeAllType === 'loss' ? 'trending-down' : 'close-circle'} size={32} color={closeAllType === 'profit' ? '#5a189a' : closeAllType === 'loss' ? '#5a189a' : '#5a189a'} />
             </View>
             <Text style={styles.confirmModalTitle}>
               {closeAllType === 'all' && 'Close All Trades?'}
@@ -3428,7 +3742,7 @@ const TradeTab = () => {
                 <Text style={styles.confirmCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity 
-                style={[styles.confirmCloseBtn, { backgroundColor: closeAllType === 'profit' ? '#2563EB' : closeAllType === 'loss' ? '#2563EB' : '#2563EB' }, isClosingAll && styles.btnDisabled]} 
+                style={[styles.confirmCloseBtn, { backgroundColor: closeAllType === 'profit' ? '#5a189a' : closeAllType === 'loss' ? '#5a189a' : '#5a189a' }, isClosingAll && styles.btnDisabled]} 
                 onPress={confirmCloseAll}
                 disabled={isClosingAll}
               >
@@ -3522,7 +3836,7 @@ const TradeTab = () => {
                   <Text style={[styles.detailSectionTitle, { color: colors.primary }]}>Stop Loss / Take Profit</Text>
                   <View style={[styles.detailRow, { borderBottomColor: colors.border }]}>
                     <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Stop Loss</Text>
-                    <Text style={[styles.detailValue, { color: (historyDetailTrade.sl || historyDetailTrade.stopLoss) ? '#2563EB' : colors.textMuted }]}>
+                    <Text style={[styles.detailValue, { color: (historyDetailTrade.sl || historyDetailTrade.stopLoss) ? '#5a189a' : colors.textMuted }]}>
                       {historyDetailTrade.sl || historyDetailTrade.stopLoss || 'Not Set'}
                     </Text>
                   </View>
@@ -3617,7 +3931,7 @@ const HistoryTab = () => {
       style={styles.container}
       data={ctx.tradeHistory}
       keyExtractor={item => item._id}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2563EB" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#5a189a" />}
       ListEmptyComponent={
         <View style={styles.emptyState}>
           <Ionicons name="document-text-outline" size={48} color="#666" />
@@ -3890,7 +4204,7 @@ const ChartTab = ({ route }) => {
         lots: parseFloat(volume) || 0.01,
       };
       
-      // Add SL/TP if set (PTD2 uses stop_loss/take_profit)
+      // Add SL/TP if set (TrustEdge uses stop_loss/take_profit)
       if (stopLoss) orderData.stop_loss = parseFloat(stopLoss);
       if (takeProfit) orderData.take_profit = parseFloat(takeProfit);
       
@@ -4334,6 +4648,11 @@ const MoreTab = ({ navigation }) => {
   const menuItems = [
     { icon: 'book-outline', label: 'Orders', screen: 'OrderBook', isTab: false, color: colors.primary },
     { icon: 'wallet-outline', label: 'Wallet', screen: 'Wallet', isTab: false, color: colors.primary },
+    { icon: 'bar-chart-outline', label: 'PAMM / MAM', screen: 'Pamm', isTab: false, color: '#06b6d4' },
+    { icon: 'calculator-outline', label: 'Risk Calculator', screen: 'RiskCalculator', isTab: false, color: '#f59e0b' },
+    { icon: 'calendar-outline', label: 'Economic Calendar', screen: 'EconomicCalendar', isTab: false, color: '#ef4444' },
+    { icon: 'school-outline', label: 'Academy', screen: 'Academy', isTab: false, color: '#2196f3' },
+    { icon: 'receipt-outline', label: 'Transaction History', screen: 'TransactionHistory', isTab: false, color: '#a855f7' },
     { icon: 'people-circle-outline', label: 'Social', screen: 'Social', isTab: false, color: colors.primary },
     { icon: 'briefcase-outline', label: 'Business', screen: 'Business', params: { initialTab: 'ib' }, isTab: false, color: colors.primary },
     { icon: 'person-outline', label: 'Profile', screen: 'Profile', isTab: false, color: colors.primary },
@@ -4478,7 +4797,7 @@ const styles = StyleSheet.create({
   
   accountCard: { margin: 16, padding: 16, backgroundColor: '#141414', borderRadius: 16, borderWidth: 1, borderColor: '#1e1e1e' },
   accountCardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  accountIconContainer: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#2563EB20', justifyContent: 'center', alignItems: 'center' },
+  accountIconContainer: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#5a189a20', justifyContent: 'center', alignItems: 'center' },
   accountInfo: { flex: 1, marginLeft: 12 },
   accountId: { color: '#fff', fontSize: 16, fontWeight: '600' },
   accountType: { color: '#666', fontSize: 12, marginTop: 2 },
@@ -4558,7 +4877,7 @@ const styles = StyleSheet.create({
   
   // Deposit/Withdraw Buttons
   actionButtons: { flexDirection: 'row', gap: 8, marginHorizontal: 16, marginTop: 12 },
-  depositBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, backgroundColor: '#2563EB', borderRadius: 12 },
+  depositBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, backgroundColor: '#5a189a', borderRadius: 12 },
   depositBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   withdrawBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, backgroundColor: '#0f0f0f', borderRadius: 12, borderWidth: 1, borderColor: '#2a2a2a' },
   withdrawBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
@@ -4593,7 +4912,7 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sectionTitle: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  seeAllText: { color: '#2563EB', fontSize: 13, fontWeight: '500' },
+  seeAllText: { color: '#5a189a', fontSize: 13, fontWeight: '500' },
   
   // Copy Trade Masters Section
   mastersSection: { marginHorizontal: 16, marginTop: 16 },
@@ -4613,11 +4932,11 @@ const styles = StyleSheet.create({
     width: 48, 
     height: 48, 
     borderRadius: 24, 
-    backgroundColor: '#2563EB30', 
+    backgroundColor: '#5a189a30', 
     justifyContent: 'center', 
     alignItems: 'center' 
   },
-  masterAvatarText: { color: '#2563EB', fontSize: 18, fontWeight: 'bold' },
+  masterAvatarText: { color: '#5a189a', fontSize: 18, fontWeight: 'bold' },
   followingBadgeSmall: { 
     position: 'absolute', 
     bottom: -2, 
@@ -4647,7 +4966,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8, 
     borderRadius: 8 
   },
-  marketTabActive: { backgroundColor: '#2563EB' },
+  marketTabActive: { backgroundColor: '#5a189a' },
   marketTabText: { color: '#888', fontSize: 12, fontWeight: '600' },
   marketTabTextActive: { color: '#fff' },
   marketList: {},
@@ -4867,12 +5186,12 @@ const styles = StyleSheet.create({
     width: 80, 
     height: 80, 
     borderRadius: 40, 
-    backgroundColor: '#2563EB30', 
+    backgroundColor: '#5a189a30', 
     justifyContent: 'center', 
     alignItems: 'center',
     marginBottom: 12
   },
-  masterProfileAvatarText: { color: '#2563EB', fontSize: 32, fontWeight: 'bold' },
+  masterProfileAvatarText: { color: '#5a189a', fontSize: 32, fontWeight: 'bold' },
   masterProfileName: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
   masterProfileBio: { color: '#888', fontSize: 13, textAlign: 'center', marginTop: 8, paddingHorizontal: 20 },
   followingBadgeLarge: { 
@@ -4902,7 +5221,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     justifyContent: 'center', 
     gap: 8, 
-    backgroundColor: '#2563EB', 
+    backgroundColor: '#5a189a', 
     paddingVertical: 14, 
     borderRadius: 12 
   },
@@ -4925,7 +5244,7 @@ const styles = StyleSheet.create({
     marginTop: 16, 
     paddingVertical: 12 
   },
-  viewFullProfileText: { color: '#2563EB', fontSize: 14, fontWeight: '600' },
+  viewFullProfileText: { color: '#5a189a', fontSize: 14, fontWeight: '600' },
   
   // MarketWatch News Section
   marketWatchSection: { marginHorizontal: 16, marginTop: 16 },
@@ -4947,8 +5266,8 @@ const styles = StyleSheet.create({
   newsCardContentVertical: { flex: 1, padding: 14, justifyContent: 'space-between' },
   newsCardContentFull: { padding: 14 },
   newsCardMeta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  newsCategoryBadge: { backgroundColor: '#2563EB20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
-  newsCategoryText: { color: '#2563EB', fontSize: 11, fontWeight: '600' },
+  newsCategoryBadge: { backgroundColor: '#5a189a20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
+  newsCategoryText: { color: '#5a189a', fontSize: 11, fontWeight: '600' },
   newsTime: { color: '#666', fontSize: 11 },
   newsCardTitle: { color: '#fff', fontSize: 14, fontWeight: '600', lineHeight: 20, marginBottom: 6 },
   newsCardDesc: { color: '#888', fontSize: 12, lineHeight: 17, marginBottom: 10 },
@@ -4969,12 +5288,12 @@ const styles = StyleSheet.create({
   positionsCard: { margin: 16, padding: 16, backgroundColor: '#1E1E1E', borderRadius: 16, borderWidth: 1, borderColor: '#333333' },
   positionsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   positionsTitle: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  positionsCount: { color: '#2563EB', fontSize: 14 },
+  positionsCount: { color: '#5a189a', fontSize: 14 },
   noPositionsText: { color: '#666', fontSize: 14, textAlign: 'center', paddingVertical: 16 },
   positionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 12, backgroundColor: '#1E1E1E', borderRadius: 12, marginBottom: 8 },
   positionSide: { fontSize: 12, marginTop: 2 },
   positionPnlValue: { fontSize: 16, fontWeight: '600' },
-  viewAllText: { color: '#2563EB', fontSize: 14, textAlign: 'center', paddingTop: 8 },
+  viewAllText: { color: '#5a189a', fontSize: 14, textAlign: 'center', paddingTop: 8 },
   
   // News Section (Home Tab)
   newsSection: { margin: 16, marginTop: 8 },
@@ -4983,11 +5302,11 @@ const styles = StyleSheet.create({
   newsTab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: 10 },
   newsTabActive: { backgroundColor: '#1E1E1E' },
   newsTabText: { color: '#666', fontSize: 12, fontWeight: '500' },
-  newsTabTextActive: { color: '#2563EB' },
+  newsTabTextActive: { color: '#5a189a' },
   newsContent: {},
   newsItem: { backgroundColor: '#1E1E1E', borderRadius: 12, padding: 16, marginBottom: 10, borderWidth: 1, borderColor: '#333333' },
-  newsCategory: { backgroundColor: '#2563EB20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, alignSelf: 'flex-start', marginBottom: 8 },
-  newsCategoryText: { color: '#2563EB', fontSize: 11, fontWeight: '600' },
+  newsCategory: { backgroundColor: '#5a189a20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, alignSelf: 'flex-start', marginBottom: 8 },
+  newsCategoryText: { color: '#5a189a', fontSize: 11, fontWeight: '600' },
   newsTitle: { color: '#fff', fontSize: 14, fontWeight: '500', lineHeight: 20, marginBottom: 8 },
   newsMeta: { flexDirection: 'row', justifyContent: 'space-between' },
   newsSource: { color: '#888', fontSize: 12 },
@@ -4997,8 +5316,8 @@ const styles = StyleSheet.create({
   calendarHeaderText: { color: '#666', fontSize: 11, fontWeight: '600', width: 50, textAlign: 'center' },
   calendarRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#333333' },
   calendarTime: { color: '#fff', fontSize: 12, fontWeight: '500', width: 50, textAlign: 'center' },
-  currencyBadge: { backgroundColor: '#2563EB20', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, width: 50, alignItems: 'center' },
-  currencyText: { color: '#2563EB', fontSize: 11, fontWeight: '600' },
+  currencyBadge: { backgroundColor: '#5a189a20', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, width: 50, alignItems: 'center' },
+  currencyText: { color: '#5a189a', fontSize: 11, fontWeight: '600' },
   eventName: { color: '#fff', fontSize: 13, fontWeight: '500' },
   eventForecast: { color: '#666', fontSize: 10, marginTop: 2 },
   impactDot: { width: 10, height: 10, borderRadius: 5 },
@@ -5066,7 +5385,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   marketTabBtnActive: {
-    backgroundColor: '#2563eb',
+    backgroundColor: '#5a189a',
   },
   marketTabText: {
     color: '#666',
@@ -5147,7 +5466,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#333333',
   },
-  categoryBtnActive: { backgroundColor: '#2563EB' },
+  categoryBtnActive: { backgroundColor: '#5a189a' },
   categoryText: { color: '#666', fontSize: 12, fontWeight: '500' },
   categoryTextActive: { color: '#000', fontWeight: '600' },
   
@@ -5164,11 +5483,11 @@ const styles = StyleSheet.create({
   instrumentSymbol: { color: '#fff', fontSize: 14, fontWeight: '600' },
   instrumentName: { color: '#666', fontSize: 10, marginTop: 2 },
   instrumentPriceCol: { width: 60, alignItems: 'center' },
-  bidPrice: { color: '#2563EB', fontSize: 13, fontWeight: '500' },
+  bidPrice: { color: '#5a189a', fontSize: 13, fontWeight: '500' },
   askPrice: { color: '#ef4444', fontSize: 13, fontWeight: '500' },
   priceLabel: { color: '#666', fontSize: 9, marginTop: 1 },
   spreadBadgeCol: { paddingHorizontal: 6, paddingVertical: 4, borderRadius: 4, marginHorizontal: 4, minWidth: 32, alignItems: 'center', borderWidth: 1 },
-  spreadBadgeText: { color: '#2563EB', fontSize: 11, fontWeight: '600' },
+  spreadBadgeText: { color: '#5a189a', fontSize: 11, fontWeight: '600' },
   chartIconBtn: { 
     width: 32, 
     height: 32, 
@@ -5207,7 +5526,7 @@ const styles = StyleSheet.create({
   orderCloseBtn: { padding: 6 },
   leverageRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 10 },
   leverageLabel: { color: '#888', fontSize: 12 },
-  leverageValue: { color: '#2563EB', fontSize: 14, fontWeight: 'bold' },
+  leverageValue: { color: '#5a189a', fontSize: 14, fontWeight: 'bold' },
   quickTradeRow: { flexDirection: 'row', gap: 8, marginBottom: 6 },
   quickSellBtn: { flex: 1, backgroundColor: '#ef4444', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
   quickBuyBtn: { flex: 1, backgroundColor: '#22c55e', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
@@ -5220,19 +5539,19 @@ const styles = StyleSheet.create({
   slMandatoryText: { color: '#f59e0b', fontSize: 12, flex: 1 },
   orderTypeRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   orderTypeBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
-  orderTypeBtnActive: { backgroundColor: '#2563EB' },
+  orderTypeBtnActive: { backgroundColor: '#5a189a' },
   orderTypeBtnText: { fontSize: 13, fontWeight: '600' },
   orderTypeBtnTextActive: { color: '#fff' },
   pendingTypeRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   pendingTypeBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1 },
-  pendingTypeBtnActive: { borderColor: '#2563EB' },
+  pendingTypeBtnActive: { borderColor: '#5a189a' },
   pendingTypeText: { color: '#666', fontSize: 12 },
-  pendingTypeTextActive: { color: '#2563EB' },
+  pendingTypeTextActive: { color: '#5a189a' },
   inputSection: { marginBottom: 10 },
   inputLabel: { color: '#888', fontSize: 11, marginBottom: 4 },
   priceInput: { backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, color: '#fff', fontSize: 15 },
   volumeControlRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  volumeControlBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center', backgroundColor: '#2563EB', borderRadius: 8 },
+  volumeControlBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center', backgroundColor: '#5a189a', borderRadius: 8 },
   volumeInputField: { flex: 1, backgroundColor: '#1E1E1E', borderRadius: 8, paddingVertical: 10, textAlign: 'center', color: '#fff', fontSize: 15 },
   slTpRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
   slTpCol: { flex: 1 },
@@ -5242,14 +5561,14 @@ const styles = StyleSheet.create({
   finalBuyBtn: { flex: 1, backgroundColor: '#22c55e', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   finalBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   spreadBadge: { backgroundColor: '#1E1E1E', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginHorizontal: 8, borderWidth: 1, borderColor: '#333333' },
-  spreadText: { color: '#2563EB', fontSize: 10 },
+  spreadText: { color: '#5a189a', fontSize: 10 },
   
   // Trade
   priceBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, backgroundColor: '#1E1E1E' },
   currentSymbol: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   currentName: { color: '#666', fontSize: 12 },
   priceDisplay: { flexDirection: 'row', gap: 16 },
-  bidPriceMain: { color: '#2563EB', fontSize: 16, fontWeight: '600' },
+  bidPriceMain: { color: '#5a189a', fontSize: 16, fontWeight: '600' },
   askPriceMain: { color: '#ef4444', fontSize: 16, fontWeight: '600' },
   
   // Trade tab — dashboard (web-style)
@@ -5301,14 +5620,14 @@ const styles = StyleSheet.create({
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#333333' },
   summaryLabel: { color: '#666', fontSize: 14 },
   summaryValue: { color: '#fff', fontSize: 14 },
-  pendingStatus: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
+  pendingStatus: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
   historySide: { fontSize: 12, marginLeft: 8 },
   
   tradeTabs: { flexDirection: 'row', backgroundColor: '#1E1E1E', borderBottomWidth: 1, borderBottomColor: '#333333' },
   tradeTabBtn: { flex: 1, paddingVertical: 12, alignItems: 'center' },
-  tradeTabBtnActive: { borderBottomWidth: 2, borderBottomColor: '#2563EB' },
+  tradeTabBtnActive: { borderBottomWidth: 2, borderBottomColor: '#5a189a' },
   tradeTabText: { color: '#666', fontSize: 14 },
-  tradeTabTextActive: { color: '#2563EB', fontWeight: '600' },
+  tradeTabTextActive: { color: '#5a189a', fontWeight: '600' },
   
   tradesList: { flex: 1 },
   positionItem: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#333333' },
@@ -5321,13 +5640,13 @@ const styles = StyleSheet.create({
   positionDetail: { color: '#666', fontSize: 12, marginTop: 4 },
   slTpText: { color: '#888', fontSize: 11, marginTop: 2 },
   positionActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 8 },
-  editBtn: { padding: 10, backgroundColor: '#2563EB20', borderRadius: 10 },
-  closeTradeBtn: { padding: 10, backgroundColor: '#2563EB20', borderRadius: 10 },
+  editBtn: { padding: 10, backgroundColor: '#5a189a20', borderRadius: 10 },
+  closeTradeBtn: { padding: 10, backgroundColor: '#5a189a20', borderRadius: 10 },
   positionPnlCol: { alignItems: 'flex-end' },
   positionPnl: { fontSize: 15, fontWeight: '600' },
   currentPriceText: { color: '#666', fontSize: 12, marginTop: 2 },
-  closeBtn: { backgroundColor: '#2563EB20', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 6 },
-  closeBtnText: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
+  closeBtn: { backgroundColor: '#5a189a20', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 6 },
+  closeBtnText: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
   
   // SL/TP Modal
   slTpModalOverlay: { flex: 1, justifyContent: 'flex-end' },
@@ -5344,53 +5663,53 @@ const styles = StyleSheet.create({
   slTpButtonRow: { flexDirection: 'row', gap: 12, marginTop: 8 },
   slTpClearBtn: { flex: 1, backgroundColor: '#1E1E1E', padding: 16, borderRadius: 12, alignItems: 'center' },
   slTpClearBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  slTpSaveBtn: { flex: 2, backgroundColor: '#2563EB', padding: 16, borderRadius: 12, alignItems: 'center' },
+  slTpSaveBtn: { flex: 2, backgroundColor: '#5a189a', padding: 16, borderRadius: 12, alignItems: 'center' },
   slTpSaveBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   
   // Trade Details Modal - colors applied inline with theme
   tradeDetailsContent: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 40, maxHeight: '85%' },
   tradeDetailsScroll: { maxHeight: 500 },
   detailSection: { borderRadius: 12, padding: 16, marginBottom: 12 },
-  detailSectionTitle: { color: '#2563EB', fontSize: 14, fontWeight: 'bold', marginBottom: 12 },
+  detailSectionTitle: { color: '#5a189a', fontSize: 14, fontWeight: 'bold', marginBottom: 12 },
   detailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#333333' },
   detailLabel: { color: '#888', fontSize: 14 },
   detailValue: { color: '#fff', fontSize: 14, fontWeight: '500' },
   detailActions: { flexDirection: 'row', gap: 12, marginTop: 8, marginBottom: 20 },
-  detailEditBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#2563EB20', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#2563EB' },
-  detailEditText: { color: '#2563EB', fontSize: 15, fontWeight: '600' },
-  detailCloseBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#2563EB', padding: 14, borderRadius: 12 },
+  detailEditBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#5a189a20', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#5a189a' },
+  detailEditText: { color: '#5a189a', fontSize: 15, fontWeight: '600' },
+  detailCloseBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#5a189a', padding: 14, borderRadius: 12 },
   detailCloseText: { color: '#fff', fontSize: 15, fontWeight: '600' },
   
   // iOS-style Confirmation Modal
   confirmModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 40 },
   confirmModalContent: { backgroundColor: '#1E1E1E', borderRadius: 20, padding: 24, width: '100%', alignItems: 'center' },
-  confirmModalIcon: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#2563EB20', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  confirmModalIcon: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#5a189a20', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
   confirmModalTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 8 },
   confirmModalMessage: { color: '#888', fontSize: 15, textAlign: 'center', marginBottom: 24 },
   confirmModalButtons: { flexDirection: 'row', gap: 12, width: '100%' },
   confirmCancelBtn: { flex: 1, backgroundColor: '#1E1E1E', padding: 14, borderRadius: 12, alignItems: 'center' },
   confirmCancelText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  confirmCloseBtn: { flex: 1, backgroundColor: '#2563EB', padding: 14, borderRadius: 12, alignItems: 'center' },
+  confirmCloseBtn: { flex: 1, backgroundColor: '#5a189a', padding: 14, borderRadius: 12, alignItems: 'center' },
   confirmCloseText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   
   // Close All Buttons - background applied inline with theme
   closeAllRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 8 },
-  closeAllBtn: { flex: 1, backgroundColor: '#2563EB20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#2563EB' },
-  closeAllText: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
-  closeProfitBtn: { flex: 1, backgroundColor: '#2563EB20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#2563EB' },
-  closeProfitText: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
-  closeLossBtn: { flex: 1, backgroundColor: '#2563EB20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#2563EB' },
-  closeLossText: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
+  closeAllBtn: { flex: 1, backgroundColor: '#5a189a20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#5a189a' },
+  closeAllText: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
+  closeProfitBtn: { flex: 1, backgroundColor: '#5a189a20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#5a189a' },
+  closeProfitText: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
+  closeLossBtn: { flex: 1, backgroundColor: '#5a189a20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#5a189a' },
+  closeLossText: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
   
   // Cancel Order Button
-  cancelOrderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#2563EB20', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#2563EB' },
-  cancelOrderText: { color: '#2563EB', fontSize: 12, fontWeight: '600' },
+  cancelOrderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#5a189a20', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#5a189a' },
+  cancelOrderText: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
   
   // Swipe to Close
-  swipeCloseBtn: { backgroundColor: '#2563EB', justifyContent: 'center', alignItems: 'center', width: 80, height: '100%' },
+  swipeCloseBtn: { backgroundColor: '#5a189a', justifyContent: 'center', alignItems: 'center', width: 80, height: '100%' },
   swipeCloseText: { color: '#fff', fontSize: 12, fontWeight: '600', marginTop: 4 },
   
-  tradeButton: { margin: 16, padding: 16, backgroundColor: '#2563EB', borderRadius: 12, alignItems: 'center' },
+  tradeButton: { margin: 16, padding: 16, backgroundColor: '#5a189a', borderRadius: 12, alignItems: 'center' },
   tradeButtonText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   
   // Order Panel
@@ -5431,8 +5750,8 @@ const styles = StyleSheet.create({
   historyItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#333333' },
   historyDetails: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
   historyDetail: { color: '#666', fontSize: 12 },
-  adminBadge: { backgroundColor: '#2563EB20', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
-  adminBadgeText: { color: '#2563EB', fontSize: 10 },
+  adminBadge: { backgroundColor: '#5a189a20', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
+  adminBadgeText: { color: '#5a189a', fontSize: 10 },
   
   // History Filters
   historyFilters: { paddingVertical: 8, borderBottomWidth: 1 },
@@ -5451,7 +5770,7 @@ const styles = StyleSheet.create({
   moreMenuItemText: { flex: 1, color: '#fff', fontSize: 16 },
   themeToggleItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#333333' },
   themeToggle: { width: 50, height: 28, backgroundColor: '#1E1E1E', borderRadius: 14, justifyContent: 'center', paddingHorizontal: 2 },
-  themeToggleActive: { backgroundColor: '#2563EB' },
+  themeToggleActive: { backgroundColor: '#5a189a' },
   themeToggleThumb: { width: 24, height: 24, backgroundColor: '#fff', borderRadius: 12 },
   themeToggleThumbActive: { marginLeft: 'auto' },
   
@@ -5460,9 +5779,9 @@ const styles = StyleSheet.create({
   chartTabsBar: { flexDirection: 'row', alignItems: 'center', paddingTop: 50, paddingLeft: 8, backgroundColor: '#1E1E1E', borderBottomWidth: 1, borderBottomColor: '#333333' },
   chartTabsScroll: { flexGrow: 0 },
   chartTab: { paddingHorizontal: 14, paddingVertical: 10, marginRight: 2, borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  chartTabActive: { borderBottomColor: '#2563EB' },
+  chartTabActive: { borderBottomColor: '#5a189a' },
   chartTabText: { color: '#666', fontSize: 13, fontWeight: '500' },
-  chartTabTextActive: { color: '#2563EB' },
+  chartTabTextActive: { color: '#5a189a' },
   addChartBtn: { paddingHorizontal: 12, paddingVertical: 10 },
   chartWrapper: { flex: 1, backgroundColor: '#1E1E1E', minHeight: 400 },
   sentimentSection: { backgroundColor: '#1E1E1E', paddingHorizontal: 16, paddingVertical: 12 },
@@ -5471,7 +5790,7 @@ const styles = StyleSheet.create({
   chartPriceBar: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#1E1E1E' },
   chartPriceItem: { alignItems: 'center' },
   chartPriceLabel: { color: '#666', fontSize: 11, marginBottom: 2 },
-  chartBidPrice: { color: '#2563EB', fontSize: 16, fontWeight: '600' },
+  chartBidPrice: { color: '#5a189a', fontSize: 16, fontWeight: '600' },
   chartAskPrice: { color: '#ef4444', fontSize: 16, fontWeight: '600' },
   chartSpread: { color: '#fff', fontSize: 14 },
   chartOneClickContainer: { backgroundColor: '#1E1E1E', paddingBottom: 16 },
@@ -5549,7 +5868,7 @@ const styles = StyleSheet.create({
     height: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     borderRadius: 6,
     marginRight: 4,
   },
@@ -5558,7 +5877,7 @@ const styles = StyleSheet.create({
     height: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     borderRadius: 6,
     marginLeft: 4,
   },
@@ -5579,21 +5898,21 @@ const styles = StyleSheet.create({
   leverageModalContent: { backgroundColor: '#1E1E1E', borderRadius: 16, padding: 16, width: 200 },
   leverageModalTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center', marginBottom: 12 },
   leverageModalItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 8 },
-  leverageModalItemActive: { backgroundColor: '#2563EB20' },
+  leverageModalItemActive: { backgroundColor: '#5a189a20' },
   leverageModalItemText: { color: '#888', fontSize: 14, fontWeight: '600' },
-  leverageModalItemTextActive: { color: '#2563EB' },
+  leverageModalItemTextActive: { color: '#5a189a' },
   
   // Leverage Selector
   leverageSelector: { flexDirection: 'row', gap: 6 },
   leverageOption: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#1E1E1E', borderRadius: 6, borderWidth: 1, borderColor: '#333333' },
-  leverageOptionActive: { backgroundColor: '#2563EB20', borderColor: '#2563EB' },
+  leverageOptionActive: { backgroundColor: '#5a189a20', borderColor: '#5a189a' },
   leverageOptionText: { color: '#888', fontSize: 12, fontWeight: '600' },
-  leverageOptionTextActive: { color: '#2563EB' },
+  leverageOptionTextActive: { color: '#5a189a' },
   
   // Account Selector - Below search bar
   accountSelector: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#1E1E1E', marginHorizontal: 12, marginTop: 0, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#333333' },
   accountSelectorLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  accountIcon: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#2563EB20', justifyContent: 'center', alignItems: 'center' },
+  accountIcon: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#5a189a20', justifyContent: 'center', alignItems: 'center' },
   accountSelectorLabel: { color: '#666', fontSize: 9 },
   accountSelectorValue: { color: '#fff', fontSize: 12, fontWeight: '600' },
   
@@ -5606,14 +5925,14 @@ const styles = StyleSheet.create({
   accountPickerList: { paddingHorizontal: 12, paddingBottom: 40 },
   accountPickerSectionTitle: { fontSize: 12, fontWeight: '600', paddingHorizontal: 4, paddingTop: 12, paddingBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 },
   accountPickerItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, marginVertical: 4, backgroundColor: '#1E1E1E', borderRadius: 12 },
-  accountPickerItemActive: { backgroundColor: '#2563EB15', borderWidth: 1, borderColor: '#2563EB' },
+  accountPickerItemActive: { backgroundColor: '#5a189a15', borderWidth: 1, borderColor: '#5a189a' },
   accountPickerItemLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   accountPickerIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#1E1E1E', justifyContent: 'center', alignItems: 'center' },
-  accountPickerIconActive: { backgroundColor: '#2563EB20' },
+  accountPickerIconActive: { backgroundColor: '#5a189a20' },
   accountPickerNumber: { color: '#fff', fontSize: 15, fontWeight: '600' },
   accountPickerType: { color: '#666', fontSize: 12, marginTop: 2 },
   accountPickerItemRight: { alignItems: 'flex-end', gap: 4 },
-  accountPickerBalance: { color: '#2563EB', fontSize: 16, fontWeight: 'bold' },
+  accountPickerBalance: { color: '#5a189a', fontSize: 16, fontWeight: 'bold' },
   
   // Quick SL Modal for Challenge Accounts
   quickSlModalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)' },

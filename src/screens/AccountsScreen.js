@@ -5,6 +5,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Pressable,
   RefreshControl,
   ActivityIndicator,
   Alert,
@@ -52,7 +53,57 @@ const AccountsScreen = ({ navigation, route }) => {
     accountHolderName: '',
   });
   const [upiId, setUpiId] = useState('');
-  
+
+  // Account creation states (matches web /accounts/available-groups + POST /accounts/open)
+  const [showOpenModal, setShowOpenModal] = useState(false);
+  const [groups, setGroups] = useState([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState(null);
+  const [openingAccount, setOpeningAccount] = useState(false);
+
+  // Delete account state
+  const [deletingAccountId, setDeletingAccountId] = useState(null);
+
+  // Expand/collapse + label editing for cards
+  const [expandedAccountId, setExpandedAccountId] = useState(null);
+  const [accountLabels, setAccountLabels] = useState({});
+  const [editingLabelId, setEditingLabelId] = useState(null);
+  const [labelDraft, setLabelDraft] = useState('');
+
+  // Load saved labels from SecureStore
+  useEffect(() => {
+    (async () => {
+      try {
+        const stored = await SecureStore.getItemAsync('accountLabels');
+        if (stored) setAccountLabels(JSON.parse(stored));
+      } catch (e) {}
+    })();
+  }, []);
+
+  const saveLabel = async (aid) => {
+    const next = { ...accountLabels };
+    const v = (labelDraft || '').trim();
+    if (v) next[aid] = v;
+    else delete next[aid];
+    setAccountLabels(next);
+    try {
+      await SecureStore.setItemAsync('accountLabels', JSON.stringify(next));
+    } catch (e) {}
+    setEditingLabelId(null);
+    setLabelDraft('');
+  };
+
+  const formatDate = (iso) => {
+    if (!iso) return '—';
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '—';
+      return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    } catch {
+      return '—';
+    }
+  };
+
   // Handle incoming route params for deposit/withdraw action
   const [pendingAction, setPendingAction] = useState(null);
 
@@ -76,6 +127,14 @@ const AccountsScreen = ({ navigation, route }) => {
     }
   }, [user]);
   
+  // Auto-open the new-account modal if navigated with action=open
+  useEffect(() => {
+    if (route?.params?.action === 'open') {
+      openNewAccountModal();
+      navigation.setParams({ action: null });
+    }
+  }, [route?.params?.action]);
+
   // Handle route params to auto-open deposit/withdraw modal
   useEffect(() => {
     if (route?.params?.action && route?.params?.accountId && accounts.length > 0) {
@@ -105,7 +164,9 @@ const AccountsScreen = ({ navigation, route }) => {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await res.json();
-      setWalletBalance(data.balance || 0);
+      // Use main_wallet_balance (wallet's own funds, NOT trading account totals).
+      const mainBal = data.main_wallet_balance ?? data.wallet_balance ?? data.balance ?? 0;
+      setWalletBalance(Number(mainBal) || 0);
     } catch (e) {
       console.error('Error fetching wallet:', e);
     }
@@ -134,7 +195,7 @@ const AccountsScreen = ({ navigation, route }) => {
       });
       const data = await res.json();
       const items = data.items || data || [];
-      // Map PTD2 account fields to expected format
+      // Map TrustEdge account fields to expected format (show both demo and live, like web)
       const mappedAccounts = items.map((a) => ({
         ...a,
         id: a.id || a._id,
@@ -143,12 +204,10 @@ const AccountsScreen = ({ navigation, route }) => {
         account_number: a.account_number,
         isDemo: a.is_demo || a.isDemo || false,
         status: a.status === 'active' ? 'Active' : (a.status || 'Active'),
-        accountType: a.account_type || a.accountType || 'Standard',
+        accountType: a.account_type || a.accountType || (a.account_group?.name) || 'Standard',
       }));
-      const liveOnly = mappedAccounts.filter((a) => !isDemoAccount(a));
-      const list = liveOnly.length > 0 ? liveOnly : mappedAccounts;
-      console.log('AccountsScreen - Accounts response:', list.length, 'main accounts');
-      setAccounts(list);
+      console.log('AccountsScreen - Accounts response:', mappedAccounts.length, 'accounts (demo+live)');
+      setAccounts(mappedAccounts);
     } catch (e) {
       console.warn('AccountsScreen - Error fetching accounts:', e.message);
     }
@@ -183,7 +242,7 @@ const AccountsScreen = ({ navigation, route }) => {
     setShowAccountTransferModal(true);
   };
 
-  // Transfer from wallet to account - PTD2 uses wallet deposit
+  // Transfer from wallet to account - TrustEdge uses wallet deposit
   const handleTransferFunds = async () => {
     if (!selectedAccount || !selectedAccount._id) {
       Alert.alert('Error', 'No account selected');
@@ -201,25 +260,40 @@ const AccountsScreen = ({ navigation, route }) => {
     setIsTransferring(true);
     try {
       const token = await SecureStore.getItemAsync('token');
-      const res = await fetch(`${API_URL}/wallet/deposit`, {
+      const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
+      const accountId = selectedAccount.id || selectedAccount._id;
+      const amount = parseFloat(transferAmount);
+
+      // Try the web endpoint first (matches frontend/trader)
+      let res = await fetch(`${API_URL}/wallet/transfer-main-to-trading`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({
-          account_id: selectedAccount.id || selectedAccount._id,
-          amount: parseFloat(transferAmount),
-          method: 'internal_transfer',
-        })
+        headers,
+        body: JSON.stringify({ to_account_id: accountId, amount }),
       });
-      const data = await res.json();
-      
+
+      // Fall back to legacy /wallet/deposit if the new endpoint isn't available
+      if (res.status === 404 || res.status === 405) {
+        res = await fetch(`${API_URL}/wallet/deposit`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            account_id: accountId,
+            amount,
+            method: 'internal_transfer',
+          }),
+        });
+      }
+
+      const data = await res.json().catch(() => ({}));
+
       if (res.ok) {
         await Promise.all([fetchAccounts(), fetchWalletBalance()]);
         setShowTransferModal(false);
         setTransferAmount('');
         setSelectedAccount(null);
-        Alert.alert('Success', 'Funds transferred successfully!');
+        Alert.alert('Success', 'Funds transferred to account!');
       } else {
-        Alert.alert('Error', data.detail || data.message || 'Transfer failed');
+        Alert.alert('Error', data.detail || data.message || `Transfer failed (HTTP ${res.status})`);
       }
     } catch (e) {
       console.error('Transfer error:', e);
@@ -228,7 +302,7 @@ const AccountsScreen = ({ navigation, route }) => {
     setIsTransferring(false);
   };
 
-  // Withdraw from account to wallet - PTD2 uses wallet withdraw
+  // Withdraw from account to wallet - TrustEdge uses wallet withdraw
   const handleWithdrawFromAccount = async () => {
     if (!transferAmount || parseFloat(transferAmount) <= 0) {
       Alert.alert('Error', 'Please enter a valid amount');
@@ -246,17 +320,32 @@ const AccountsScreen = ({ navigation, route }) => {
     setIsTransferring(true);
     try {
       const token = await SecureStore.getItemAsync('token');
-      const res = await fetch(`${API_URL}/wallet/withdraw`, {
+      const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
+      const accountId = selectedAccount.id || selectedAccount._id;
+      const amount = parseFloat(transferAmount);
+
+      // Try the web endpoint first
+      let res = await fetch(`${API_URL}/wallet/transfer-trading-to-main`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({
-          account_id: selectedAccount.id || selectedAccount._id,
-          amount: parseFloat(transferAmount),
-          method: 'internal_transfer',
-        })
+        headers,
+        body: JSON.stringify({ from_account_id: accountId, amount }),
       });
-      const data = await res.json();
-      
+
+      // Fall back to legacy /wallet/withdraw with internal_transfer method
+      if (res.status === 404 || res.status === 405) {
+        res = await fetch(`${API_URL}/wallet/withdraw`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            account_id: accountId,
+            amount,
+            method: 'internal_transfer',
+          }),
+        });
+      }
+
+      const data = await res.json().catch(() => ({}));
+
       if (res.ok) {
         await Promise.all([fetchAccounts(), fetchWalletBalance()]);
         setShowWithdrawModal(false);
@@ -264,10 +353,10 @@ const AccountsScreen = ({ navigation, route }) => {
         setSelectedAccount(null);
         Alert.alert('Success', 'Funds withdrawn to main wallet!');
       } else {
-        Alert.alert('Error', data.detail || data.message || 'Withdrawal failed');
+        Alert.alert('Error', data.detail || data.message || `Withdrawal failed (HTTP ${res.status})`);
       }
     } catch (e) {
-      Alert.alert('Error', 'Error withdrawing funds');
+      Alert.alert('Error', 'Error withdrawing funds: ' + e.message);
     }
     setIsTransferring(false);
   };
@@ -339,15 +428,165 @@ const AccountsScreen = ({ navigation, route }) => {
     setIsTransferring(false);
   };
 
-  // Transfer between accounts - PTD2 doesn't support direct account-to-account transfer
+  // Transfer between accounts - matches web POST /wallet/transfer-internal
   const handleAccountToAccountTransfer = async () => {
-    Alert.alert('Info', 'Account-to-account transfer is not available. Please withdraw to wallet first, then deposit to target account.');
+    if (!selectedAccount?._id) {
+      Alert.alert('Error', 'No source account selected');
+      return;
+    }
+    if (!targetAccount?._id) {
+      Alert.alert('Error', 'Please select a target account');
+      return;
+    }
+    if (selectedAccount._id === targetAccount._id) {
+      Alert.alert('Error', 'Source and target must be different accounts');
+      return;
+    }
+    if (!transferAmount || parseFloat(transferAmount) <= 0) {
+      Alert.alert('Error', 'Please enter a valid amount');
+      return;
+    }
+    const freeMargin = Number(selectedAccount.free_margin ?? selectedAccount.balance ?? 0);
+    if (parseFloat(transferAmount) > freeMargin) {
+      Alert.alert('Error', 'Insufficient free margin in source account');
+      return;
+    }
+
+    setIsTransferring(true);
+    try {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/wallet/transfer-internal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          from_account_id: selectedAccount.id || selectedAccount._id,
+          to_account_id: targetAccount.id || targetAccount._id,
+          amount: parseFloat(transferAmount),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        await Promise.all([fetchAccounts(), fetchWalletBalance()]);
+        setShowAccountTransferModal(false);
+        setTransferAmount('');
+        setSelectedAccount(null);
+        setTargetAccount(null);
+        Alert.alert('Success', 'Funds transferred between accounts');
+      } else {
+        Alert.alert('Error', data.detail || data.message || 'Transfer failed');
+      }
+    } catch (e) {
+      Alert.alert('Error', e.message || 'Transfer failed');
+    }
+    setIsTransferring(false);
+  };
+
+  // Fetch available account groups for new account creation
+  const fetchAccountGroups = async () => {
+    setGroupsLoading(true);
+    try {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/accounts/available-groups`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      const items = data.items || data || [];
+      setGroups(Array.isArray(items) ? items : []);
+    } catch (e) {
+      console.warn('Account groups fetch error:', e.message);
+      setGroups([]);
+    }
+    setGroupsLoading(false);
+  };
+
+  const openNewAccountModal = async () => {
+    setSelectedGroupId(null);
+    setShowOpenModal(true);
+    await fetchAccountGroups();
+  };
+
+  // Create new trading account (matches web POST /accounts/open)
+  const handleOpenAccount = async () => {
+    if (!selectedGroupId) {
+      Alert.alert('Account type', 'Please select an account type');
+      return;
+    }
+    setOpeningAccount(true);
+    try {
+      const token = await SecureStore.getItemAsync('token');
+      const res = await fetch(`${API_URL}/accounts/open`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ account_group_id: selectedGroupId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setShowOpenModal(false);
+        setSelectedGroupId(null);
+        await fetchAccounts();
+        Alert.alert('Success', `Account ${data.account_number || 'created'} opened`);
+      } else {
+        Alert.alert('Error', data.detail || data.message || 'Could not open account');
+      }
+    } catch (e) {
+      Alert.alert('Error', e.message || 'Could not open account');
+    }
+    setOpeningAccount(false);
+  };
+
+  // Delete a trading account
+  const handleDeleteAccount = (account) => {
+    const aid = account.id || account._id;
+    const label = account.account_number || account.accountId || 'this account';
+    Alert.alert(
+      'Delete account',
+      `Permanently delete ${label}? This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingAccountId(aid);
+            try {
+              const token = await SecureStore.getItemAsync('token');
+              const res = await fetch(`${API_URL}/accounts/${aid}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` },
+              });
+              if (res.ok) {
+                setAccounts((prev) => prev.filter((a) => (a.id || a._id) !== aid));
+                Alert.alert('Deleted', 'Account removed');
+              } else {
+                const data = await res.json().catch(() => ({}));
+                Alert.alert('Error', data.detail || data.message || 'Delete failed');
+              }
+            } catch (e) {
+              Alert.alert('Error', e.message);
+            }
+            setDeletingAccountId(null);
+          },
+        },
+      ]
+    );
   };
 
   const selectAccountForTrading = async (account) => {
     const aid = account.id || account._id;
-    await SecureStore.setItemAsync('selectedAccountId', aid);
+    console.log('[AccountsScreen] Trade pressed for account:', aid);
+    try {
+      await SecureStore.setItemAsync('selectedAccountId', aid);
+    } catch (e) {}
+    // First: send selectedAccountId to MainTrading stack route (triggers TradingProvider's useEffect to switch active account)
     navigation.navigate('MainTrading', { selectedAccountId: aid });
+    // Then: jump to the Chart tab inside MainTrading's bottom tab navigator
+    setTimeout(() => {
+      try {
+        navigation.navigate('MainTrading', { screen: 'Chart' });
+      } catch (e) {
+        console.warn('[AccountsScreen] Could not switch to Chart tab:', e?.message);
+      }
+    }, 80);
   };
 
   if (loading) {
@@ -358,9 +597,8 @@ const AccountsScreen = ({ navigation, route }) => {
     );
   }
 
-  const mainTradingAccounts = accounts.filter(
-    (a) => !isDemoAccount(a) && isActiveStatus(a)
-  );
+  // Show all active accounts (demo + live), like web
+  const mainTradingAccounts = accounts.filter((a) => isActiveStatus(a));
 
   return (
     <View style={[styles.container, { backgroundColor: colors.bgPrimary }]}>
@@ -369,7 +607,10 @@ const AccountsScreen = ({ navigation, route }) => {
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Account</Text>
+        <View style={{ flex: 1, alignItems: 'center' }}>
+          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Trading Accounts</Text>
+          <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>Manage your trading accounts</Text>
+        </View>
         <View style={{ width: 44 }} />
       </View>
 
@@ -377,112 +618,326 @@ const AccountsScreen = ({ navigation, route }) => {
         style={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
       >
-        {/* Wallet — same as web: funds live under Wallet */}
+        {/* New Account button — full width dashed (matches web) */}
         <TouchableOpacity
-          style={[styles.walletCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}
-          onPress={() => navigation.navigate('Wallet')}
+          onPress={openNewAccountModal}
           activeOpacity={0.85}
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+            paddingVertical: 18,
+            borderRadius: 14,
+            borderWidth: 2,
+            borderStyle: 'dashed',
+            borderColor: colors.success,
+            backgroundColor: 'transparent',
+            marginBottom: 16,
+          }}
         >
-          <View style={styles.walletHeader}>
-            <View style={[styles.walletIconContainer, { backgroundColor: colors.accent + '20' }]}>
-              <Ionicons name="wallet-outline" size={24} color={colors.accent} />
-            </View>
-            <View style={styles.walletInfo}>
-              <Text style={[styles.walletTitle, { color: colors.textMuted }]}>Wallet</Text>
-              <Text style={[styles.walletBalanceText, { color: colors.textPrimary }]}>${walletBalance.toFixed(2)}</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={22} color={colors.textMuted} />
-          </View>
-          <Text style={[styles.emptyText, { color: colors.textMuted, marginTop: 8, paddingHorizontal: 4 }]}>
-            Deposit and withdraw in Wallet (same as web).
-          </Text>
+          <Ionicons name="add" size={20} color={colors.success} />
+          <Text style={{ color: colors.success, fontSize: 15, fontWeight: '700' }}>New Account</Text>
         </TouchableOpacity>
-
-        <Text style={[styles.walletTitle, { color: colors.textMuted, marginTop: 12, marginBottom: 4, marginHorizontal: 4, fontSize: 13 }]}>
-          Trading account
-        </Text>
 
         {mainTradingAccounts.length === 0 ? (
           <View style={styles.emptyState}>
             <Ionicons name="briefcase-outline" size={64} color={colors.textMuted} />
             <Text style={[styles.emptyTitle, { color: colors.textPrimary }]}>No trading account</Text>
-            <Text style={[styles.emptyText, { color: colors.textMuted }]}>Use Wallet to add funds, then open the Trade tab.</Text>
-            <TouchableOpacity
-              style={[styles.tradeBtn, { backgroundColor: colors.accent, marginTop: 16 }]}
-              onPress={() => navigation.navigate('Wallet')}
-            >
-              <Text style={styles.tradeBtnText}>Open Wallet</Text>
-            </TouchableOpacity>
+            <Text style={[styles.emptyText, { color: colors.textMuted }]}>Tap "+ New Account" above to open one.</Text>
           </View>
         ) : (
-          mainTradingAccounts.map((account) => (
-            <View key={String(account.id || account._id)} style={[styles.accountCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-              <TouchableOpacity style={styles.accountHeader} onPress={() => selectAccountForTrading(account)}>
-                <View style={[styles.accountIconContainer, { backgroundColor: colors.accent + '20' }]}>
-                  <Ionicons name="briefcase-outline" size={24} color={colors.accent} />
-                </View>
-                <View style={styles.accountInfo}>
-                  <Text style={[styles.accountId, { color: colors.textPrimary }]}>
-                    {account.account_number || account.accountId}
-                  </Text>
-                  <Text style={[styles.accountType, { color: colors.textMuted }]}>
-                    {account.accountTypeId?.name || account.accountType || 'Standard'}
-                    {' • Leverage '}
-                    {String(account.leverage || '').includes(':')
-                      ? account.leverage
-                      : `1:${account.leverage || 100}`}
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
-              </TouchableOpacity>
+          mainTradingAccounts.map((account) => {
+            const aid = account.id || account._id;
+            const isExpanded = expandedAccountId === aid;
+            const isDemo = isDemoAccount(account);
+            const dotColor = isDemo ? colors.warning : colors.success;
+            const customLabel = accountLabels[aid];
+            const defaultLabel = isDemo ? 'Demo Account' : 'Live Account';
+            const balance = Number(account.balance || 0);
+            const credit = Number(account.credit || 0);
+            const equity = Number(account.equity || balance + credit);
+            const pnl = equity - balance - credit;
+            const pnlPct = balance > 0 ? (pnl / balance) * 100 : 0;
+            const lev = String(account.leverage || '').includes(':')
+              ? account.leverage
+              : `1:${account.leverage || 100}`;
+            const acctType = account.account_group?.name || account.accountTypeId?.name || account.accountType || 'Standard';
+            const acctNum = account.account_number || account.accountId || '';
+            const numPrefix = isDemo ? 'D' : 'L';
 
-              <View style={styles.balanceSection}>
-                <View style={styles.balanceRow}>
-                  <View style={styles.balanceItem}>
-                    <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Balance</Text>
-                    <Text style={[styles.balanceValue, { color: colors.textPrimary }]}>${(account.balance || 0).toFixed(2)}</Text>
-                  </View>
-                  <View style={styles.balanceItem}>
-                    <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Equity</Text>
-                    <Text style={[styles.balanceValue, { color: colors.textPrimary }]}>
-                      ${(Number(account.equity) || (account.balance || 0) + (account.credit || 0)).toFixed(2)}
-                    </Text>
-                  </View>
-                  <View style={styles.balanceItem}>
-                    <Text style={[styles.balanceLabel, { color: colors.textMuted }]}>Free margin</Text>
-                    <Text style={[styles.balanceValue, { color: colors.textPrimary }]}>
-                      ${(account.free_margin != null ? Number(account.free_margin) : 0).toFixed(2)}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              <View style={styles.actionButtons}>
-                <TouchableOpacity
-                  style={[styles.depositBtn, { backgroundColor: colors.accent }]}
-                  onPress={() => handleDeposit(account)}
-                >
-                  <Ionicons name="arrow-down-circle-outline" size={18} color="#000" />
-                  <Text style={styles.depositBtnText}>Deposit</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.withdrawBtn, { backgroundColor: colors.bgSecondary, borderColor: colors.border }]}
-                  onPress={() => handleWithdraw(account)}
-                >
-                  <Ionicons name="arrow-up-circle-outline" size={18} color={colors.textPrimary} />
-                  <Text style={[styles.withdrawBtnText, { color: colors.textPrimary }]}>Withdraw</Text>
-                </TouchableOpacity>
-              </View>
-
-              <TouchableOpacity
-                style={[styles.tradeBtn, { backgroundColor: colors.accent }]}
-                onPress={() => selectAccountForTrading(account)}
+            return (
+              <View
+                key={String(aid)}
+                style={{
+                  backgroundColor: colors.bgCard,
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  marginBottom: 14,
+                }}
               >
-                <Ionicons name="trending-up" size={18} color="#000" />
-                <Text style={styles.tradeBtnText}>Trade</Text>
-              </TouchableOpacity>
-            </View>
-          ))
+                {/* Collapsed header — always visible, tap to expand */}
+                <Pressable
+                  onPress={() => {
+                    console.log('[AccountsScreen] Toggle expand for', aid);
+                    setExpandedAccountId(isExpanded ? null : aid);
+                  }}
+                  android_ripple={{ color: 'rgba(255,255,255,0.05)' }}
+                  style={({ pressed }) => ({ padding: 16, opacity: pressed ? 0.95 : 1 })}
+                >
+                  {/* Title row: dot + label + chevron */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                    <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: dotColor, marginRight: 10 }} />
+                    <Text style={{ color: colors.textPrimary, fontSize: 16, fontWeight: '700', flex: 1 }}>
+                      {customLabel || defaultLabel}
+                    </Text>
+                    <Ionicons
+                      name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                      size={20}
+                      color={colors.textMuted}
+                    />
+                  </View>
+
+                  {/* Account number + add label */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
+                    <Text style={{ color: colors.textMuted, fontSize: 12, fontWeight: '600' }}>
+                      #{numPrefix}#{acctNum}
+                    </Text>
+                    {editingLabelId === aid ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginLeft: 10 }}>
+                        <TextInput
+                          autoFocus
+                          value={labelDraft}
+                          onChangeText={setLabelDraft}
+                          placeholder="Account label"
+                          placeholderTextColor={colors.textMuted}
+                          style={{
+                            flex: 1,
+                            borderWidth: 1,
+                            borderColor: colors.accent,
+                            borderRadius: 6,
+                            paddingHorizontal: 8,
+                            paddingVertical: 4,
+                            color: colors.textPrimary,
+                            fontSize: 12,
+                          }}
+                        />
+                        <TouchableOpacity
+                          onPress={() => saveLabel(aid)}
+                          style={{ marginLeft: 6, padding: 4 }}
+                        >
+                          <Ionicons name="checkmark" size={18} color={colors.success} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => { setEditingLabelId(null); setLabelDraft(''); }}
+                          style={{ padding: 4 }}
+                        >
+                          <Ionicons name="close" size={18} color={colors.error} />
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <TouchableOpacity
+                        onPress={(e) => {
+                          e?.stopPropagation?.();
+                          setEditingLabelId(aid);
+                          setLabelDraft(customLabel || '');
+                        }}
+                        style={{ marginLeft: 10 }}
+                      >
+                        <Text style={{ color: colors.success, fontSize: 12, fontWeight: '600' }}>
+                          {customLabel ? 'Edit label' : '+ Add label'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
+                  {/* Stats grid: Balance | Equity */}
+                  <View style={{ flexDirection: 'row', marginBottom: 14 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 4 }}>Balance</Text>
+                      <Text style={{ color: colors.textPrimary, fontSize: 18, fontWeight: '800' }}>
+                        ${balance.toFixed(2)}
+                      </Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 4 }}>Equity</Text>
+                      <Text style={{ color: colors.textPrimary, fontSize: 18, fontWeight: '800' }}>
+                        ${equity.toFixed(2)}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Stats grid: P&L | Leverage */}
+                  <View style={{ flexDirection: 'row' }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 4 }}>P&L</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Ionicons
+                          name={pnl >= 0 ? 'trending-up' : 'trending-down'}
+                          size={14}
+                          color={pnl >= 0 ? colors.success : colors.error}
+                        />
+                        <Text style={{ color: pnl >= 0 ? colors.success : colors.error, fontSize: 14, fontWeight: '700' }}>
+                          {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                        </Text>
+                      </View>
+                      <Text style={{ color: pnl >= 0 ? colors.success : colors.error, fontSize: 11, marginTop: 2 }}>
+                        ({pnl >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)
+                      </Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 4 }}>Leverage</Text>
+                      <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>{lev}</Text>
+                    </View>
+                  </View>
+                </Pressable>
+
+                {/* Expanded section */}
+                {isExpanded && (
+                  <View style={{ paddingHorizontal: 16, paddingBottom: 16, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+                    <View style={{ flexDirection: 'row', marginTop: 14 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: colors.textMuted, fontSize: 11 }}>Currency</Text>
+                        <Text style={{ color: colors.textPrimary, fontSize: 13, fontWeight: '700', marginTop: 4 }}>
+                          {account.currency || 'USD'}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: colors.textMuted, fontSize: 11 }}>Created</Text>
+                        <Text style={{ color: colors.textPrimary, fontSize: 13, fontWeight: '700', marginTop: 4 }}>
+                          {formatDate(account.created_at)}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={{ marginTop: 14 }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 11 }}>Account type</Text>
+                      <Text style={{ color: colors.textPrimary, fontSize: 13, fontWeight: '700', marginTop: 4 }}>
+                        {acctType}
+                      </Text>
+                    </View>
+
+                    {/* Free margin (extra info) */}
+                    <View style={{ marginTop: 14 }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 11 }}>Free margin</Text>
+                      <Text style={{ color: colors.textPrimary, fontSize: 13, fontWeight: '700', marginTop: 4 }}>
+                        ${(account.free_margin != null ? Number(account.free_margin) : 0).toFixed(2)}
+                      </Text>
+                    </View>
+
+                    {/* Trade — primary CTA (Pressable for reliable Android touch) */}
+                    <Pressable
+                      onPress={() => {
+                        console.log('[AccountsScreen] Trade button pressed', aid);
+                        selectAccountForTrading(account);
+                      }}
+                      android_ripple={{ color: 'rgba(0,0,0,0.15)' }}
+                      hitSlop={8}
+                      style={({ pressed }) => ({
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 8,
+                        backgroundColor: colors.success,
+                        borderRadius: 12,
+                        paddingVertical: 14,
+                        marginTop: 18,
+                        opacity: pressed ? 0.85 : 1,
+                      })}
+                    >
+                      <Ionicons name="open-outline" size={18} color="#000" />
+                      <Text style={{ color: '#000', fontSize: 15, fontWeight: '800' }}>Trade</Text>
+                    </Pressable>
+
+                    {/* Fund movement row */}
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                      <Pressable
+                        onPress={() => {
+                          console.log('[AccountsScreen] Deposit pressed', aid);
+                          handleDeposit(account);
+                        }}
+                        android_ripple={{ color: 'rgba(255,255,255,0.1)' }}
+                        hitSlop={6}
+                        style={({ pressed }) => ({
+                          flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                          gap: 6, paddingVertical: 12, borderRadius: 10,
+                          backgroundColor: colors.bgSecondary, borderWidth: 1, borderColor: colors.border,
+                          opacity: pressed ? 0.7 : 1,
+                        })}
+                      >
+                        <Ionicons name="arrow-down-circle-outline" size={16} color={colors.textPrimary} />
+                        <Text style={{ color: colors.textPrimary, fontSize: 12, fontWeight: '600' }}>Deposit</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          console.log('[AccountsScreen] Withdraw pressed', aid);
+                          handleWithdraw(account);
+                        }}
+                        android_ripple={{ color: 'rgba(255,255,255,0.1)' }}
+                        hitSlop={6}
+                        style={({ pressed }) => ({
+                          flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                          gap: 6, paddingVertical: 12, borderRadius: 10,
+                          backgroundColor: colors.bgSecondary, borderWidth: 1, borderColor: colors.border,
+                          opacity: pressed ? 0.7 : 1,
+                        })}
+                      >
+                        <Ionicons name="arrow-up-circle-outline" size={16} color={colors.textPrimary} />
+                        <Text style={{ color: colors.textPrimary, fontSize: 12, fontWeight: '600' }}>Withdraw</Text>
+                      </Pressable>
+                      {mainTradingAccounts.length > 1 && (
+                        <Pressable
+                          onPress={() => {
+                            console.log('[AccountsScreen] Transfer pressed', aid);
+                            handleAccountTransfer(account);
+                          }}
+                          android_ripple={{ color: 'rgba(255,255,255,0.1)' }}
+                          hitSlop={6}
+                          style={({ pressed }) => ({
+                            flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                            gap: 6, paddingVertical: 12, borderRadius: 10,
+                            backgroundColor: colors.bgSecondary, borderWidth: 1, borderColor: colors.border,
+                            opacity: pressed ? 0.7 : 1,
+                          })}
+                        >
+                          <Ionicons name="swap-horizontal-outline" size={16} color={colors.textPrimary} />
+                          <Text style={{ color: colors.textPrimary, fontSize: 12, fontWeight: '600' }}>Transfer</Text>
+                        </Pressable>
+                      )}
+                    </View>
+
+                    {/* Close account — destructive */}
+                    <Pressable
+                      onPress={() => {
+                        console.log('[AccountsScreen] Close account pressed', aid);
+                        handleDeleteAccount(account);
+                      }}
+                      disabled={deletingAccountId === aid}
+                      android_ripple={{ color: 'rgba(239,68,68,0.15)' }}
+                      hitSlop={6}
+                      style={({ pressed }) => ({
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 6,
+                        marginTop: 14,
+                        paddingVertical: 12,
+                        opacity: pressed ? 0.7 : 1,
+                      })}
+                    >
+                      {deletingAccountId === aid ? (
+                        <ActivityIndicator size="small" color={colors.error} />
+                      ) : (
+                        <Ionicons name="trash-outline" size={16} color={colors.error} />
+                      )}
+                      <Text style={{ color: colors.error, fontSize: 13, fontWeight: '700' }}>Close account</Text>
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+            );
+          })
         )}
       </ScrollView>
 
@@ -710,6 +1165,95 @@ const AccountsScreen = ({ navigation, route }) => {
         </View>
       </Modal>
 
+      {/* Open New Account Modal */}
+      <Modal visible={showOpenModal} animationType="slide" transparent onRequestClose={() => setShowOpenModal(false)}>
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity style={styles.modalBackdrop} onPress={() => setShowOpenModal(false)} />
+          <View style={[styles.transferModalContent, { backgroundColor: colors.bgCard, maxHeight: '85%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Open New Account</Text>
+              <TouchableOpacity onPress={() => setShowOpenModal(false)}>
+                <Ionicons name="close" size={24} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {groupsLoading ? (
+              <ActivityIndicator color={colors.accent} style={{ marginVertical: 30 }} />
+            ) : groups.length === 0 ? (
+              <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+                <Ionicons name="alert-circle-outline" size={40} color={colors.textMuted} />
+                <Text style={{ color: colors.textMuted, marginTop: 10, fontSize: 13 }}>No account types available</Text>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 380 }}>
+                {groups.map((g) => {
+                  const selected = selectedGroupId === g.id;
+                  return (
+                    <TouchableOpacity
+                      key={g.id}
+                      onPress={() => setSelectedGroupId(g.id)}
+                      activeOpacity={0.85}
+                      style={{
+                        borderRadius: 12,
+                        borderWidth: selected ? 2 : 1,
+                        borderColor: selected ? colors.accent : colors.border,
+                        backgroundColor: selected ? colors.accent + '15' : colors.bgSecondary,
+                        padding: 14,
+                        marginBottom: 10,
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '700' }}>{g.name}</Text>
+                          {g.description ? (
+                            <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 4 }} numberOfLines={2}>
+                              {g.description}
+                            </Text>
+                          ) : null}
+                        </View>
+                        {selected && <Ionicons name="checkmark-circle" size={22} color={colors.accent} />}
+                      </View>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+                        <View>
+                          <Text style={{ color: colors.textMuted, fontSize: 10 }}>Min Deposit</Text>
+                          <Text style={{ color: colors.textPrimary, fontSize: 12, fontWeight: '700', marginTop: 2 }}>${g.minimum_deposit ?? 0}</Text>
+                        </View>
+                        <View>
+                          <Text style={{ color: colors.textMuted, fontSize: 10 }}>Leverage</Text>
+                          <Text style={{ color: colors.textPrimary, fontSize: 12, fontWeight: '700', marginTop: 2 }}>1:{g.leverage_default ?? 100}</Text>
+                        </View>
+                        <View>
+                          <Text style={{ color: colors.textMuted, fontSize: 10 }}>Commission</Text>
+                          <Text style={{ color: colors.textPrimary, fontSize: 12, fontWeight: '700', marginTop: 2 }}>${g.commission_per_lot ?? 0}/lot</Text>
+                        </View>
+                        {g.swap_free ? (
+                          <View>
+                            <Text style={{ color: colors.textMuted, fontSize: 10 }}>Swap</Text>
+                            <Text style={{ color: colors.success, fontSize: 12, fontWeight: '700', marginTop: 2 }}>Free</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            <TouchableOpacity
+              style={[styles.transferSubmitBtn, (openingAccount || !selectedGroupId) && styles.btnDisabled]}
+              onPress={handleOpenAccount}
+              disabled={openingAccount || !selectedGroupId}
+            >
+              {openingAccount ? (
+                <ActivityIndicator color="#000" />
+              ) : (
+                <Text style={styles.transferSubmitBtnText}>Open Account</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Account to Account Transfer Modal */}
       <Modal visible={showAccountTransferModal} animationType="slide" transparent onRequestClose={() => setShowAccountTransferModal(false)}>
         <View style={styles.modalOverlay}>
@@ -834,13 +1378,13 @@ const styles = StyleSheet.create({
     borderColor: '#333333',
   },
   primaryCard: {
-    borderColor: '#2563EB',
+    borderColor: '#5a189a',
     borderWidth: 2,
   },
   primaryBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
@@ -862,7 +1406,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#2563EB20',
+    backgroundColor: '#5a189a20',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -914,7 +1458,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     paddingVertical: 12,
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     borderRadius: 10,
   },
   depositBtnText: {
@@ -946,7 +1490,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   setPrimaryBtnText: {
-    color: '#2563EB',
+    color: '#5a189a',
     fontSize: 14,
   },
   tradeBtn: {
@@ -955,7 +1499,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 14,
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     borderRadius: 10,
   },
   tradeBtnText: {
@@ -984,7 +1528,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   tabActive: {
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
   },
   tabText: {
     color: '#888',
@@ -1028,7 +1572,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   walletBalanceValue: {
-    color: '#2563EB',
+    color: '#5a189a',
     fontSize: 16,
     fontWeight: 'bold',
   },
@@ -1050,7 +1594,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#2563EB20',
+    backgroundColor: '#5a189a20',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -1078,7 +1622,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   buyBtnSmall: {
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
@@ -1173,7 +1717,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#2563EB20',
+    backgroundColor: '#5a189a20',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -1216,7 +1760,7 @@ const styles = StyleSheet.create({
   },
   createAccountBtn: {
     flex: 1,
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -1258,7 +1802,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   transferValueGold: {
-    color: '#2563EB',
+    color: '#5a189a',
     fontSize: 16,
     fontWeight: 'bold',
   },
@@ -1276,7 +1820,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   transferSubmitBtn: {
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -1288,7 +1832,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   withdrawSubmitBtn: {
-    backgroundColor: '#2563EB',
+    backgroundColor: '#5a189a',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -1312,8 +1856,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   accountSelectCardActive: {
-    backgroundColor: '#2563EB',
-    borderColor: '#2563EB',
+    backgroundColor: '#5a189a',
+    borderColor: '#5a189a',
   },
   accountSelectId: {
     fontSize: 14,

@@ -14,8 +14,8 @@ export const darkTheme = {
   border: '#333333',
   borderLight: '#404040',
 
-  primary: '#2563EB',
-  primaryLight: '#2563EB28',
+  primary: '#5a189a',
+  primaryLight: '#5a189a28',
 
   success: '#22C55E',
   successLight: '#22C55E20',
@@ -23,8 +23,8 @@ export const darkTheme = {
   dangerLight: '#EF444420',
   warning: '#FBBF24',
   warningLight: '#FBBF2420',
-  info: '#2563EB',
-  infoLight: '#2563EB20',
+  info: '#5a189a',
+  infoLight: '#5a189a20',
   purple: '#8B5CF6',
   purpleLight: '#8B5CF620',
 };
@@ -42,8 +42,8 @@ export const lightTheme = {
   border: '#E2E8F0',
   borderLight: '#F1F5F9',
 
-  primary: '#2563EB',
-  primaryLight: '#2563EB20',
+  primary: '#5a189a',
+  primaryLight: '#5a189a20',
 
   success: '#22C55E',
   successLight: '#22C55E20',
@@ -51,8 +51,8 @@ export const lightTheme = {
   dangerLight: '#EF444420',
   warning: '#FBBF24',
   warningLight: '#FBBF2420',
-  info: '#2563EB',
-  infoLight: '#2563EB20',
+  info: '#5a189a',
+  infoLight: '#5a189a20',
   purple: '#8B5CF6',
   purpleLight: '#8B5CF620',
 };
