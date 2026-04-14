@@ -1084,7 +1084,7 @@ const HomeTab = ({ navigation }) => {
         if (!token || !mounted) return;
         const headers = { Authorization: `Bearer ${token}` };
 
-        // Wallet + accounts in parallel — derive wallet-only if backend doesn't expose it directly
+        // Wallet + accounts + notifications in parallel
         const [wRes, aRes, nRes] = await Promise.all([
           fetch(`${API_URL}/wallet/summary`, { headers }),
           fetch(`${API_URL}/accounts`, { headers }),
@@ -1093,16 +1093,40 @@ const HomeTab = ({ navigation }) => {
 
         if (!mounted) return;
 
-        const wData = await wRes.json().catch(() => ({}));
-        const aData = await aRes.json().catch(() => ({}));
-        const nData = await nRes.json().catch(() => ({}));
+        const wData = wRes.ok ? await wRes.json().catch(() => ({})) : {};
+        const aData = aRes.ok ? await aRes.json().catch(() => ({})) : {};
+        const nData = nRes.ok ? await nRes.json().catch(() => ({})) : {};
 
-        let bal = wData.main_wallet_balance ?? wData.wallet_balance ?? wData.main_balance;
+        console.log('[Wallet] summary response:', JSON.stringify(wData));
+
+        // Try multiple field names from /wallet/summary
+        let bal = wData.main_wallet_balance ?? wData.wallet_balance ?? wData.main_balance ?? wData.balance ?? wData.total;
+
+        // If /wallet/summary didn't return balance, try /wallet/{userId}
+        if (bal == null || bal === 0) {
+          try {
+            const userData = await SecureStore.getItemAsync('user');
+            if (userData) {
+              const user = JSON.parse(userData);
+              const userId = user._id || user.id;
+              if (userId) {
+                const wRes2 = await fetch(`${API_URL}/wallet/${userId}`, { headers });
+                if (wRes2.ok) {
+                  const wData2 = await wRes2.json().catch(() => ({}));
+                  console.log('[Wallet] /wallet/:id response:', JSON.stringify(wData2));
+                  const walletObj = wData2.wallet || wData2;
+                  bal = walletObj.main_wallet_balance ?? walletObj.wallet_balance ?? walletObj.balance ?? bal;
+                }
+              }
+            }
+          } catch (_) {}
+        }
+
+        // Final fallback: derive from account totals
         if (bal == null) {
-          const total = Number(wData.balance ?? wData.total ?? 0);
           const acctList = Array.isArray(aData.items) ? aData.items : (Array.isArray(aData) ? aData : []);
           const acctTotal = acctList.reduce((s, a) => s + Number(a?.balance || 0), 0);
-          bal = total - acctTotal;
+          bal = acctTotal;
         }
         if (mounted) setWalletBal(Math.max(0, Number(bal) || 0));
 
@@ -1111,7 +1135,9 @@ const HomeTab = ({ navigation }) => {
           ? list.filter((n) => !(n.is_read || n.read)).length
           : 0;
         if (mounted) setUnreadCount(count);
-      } catch (e) {}
+      } catch (e) {
+        console.error('[Wallet] fetchAll error:', e);
+      }
     };
 
     fetchAll();
