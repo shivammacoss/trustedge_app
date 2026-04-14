@@ -117,9 +117,28 @@ const WalletScreen = ({ navigation }) => {
 
       if (walletRes.ok) {
         const walletData = await walletRes.json();
-        // Web uses main_wallet_balance — that's the wallet's own balance,
-        // separate from trading account balances. Fall back to balance for older backends.
-        const mainBal = walletData.main_wallet_balance ?? walletData.wallet_balance ?? walletData.balance ?? 0;
+        let mainBal = walletData.main_wallet_balance ?? walletData.wallet_balance ?? walletData.balance;
+
+        // Fallback: /wallet/summary returned 0 or missing — try /wallet/:userId
+        if (mainBal == null || Number(mainBal) === 0) {
+          try {
+            const userData = await SecureStore.getItemAsync('user');
+            if (userData) {
+              const user = JSON.parse(userData);
+              const userId = user._id || user.id;
+              if (userId) {
+                const wRes2 = await fetch(`${API_URL}/wallet/${userId}`, { headers });
+                if (wRes2.ok) {
+                  const wData2 = await wRes2.json().catch(() => ({}));
+                  const walletObj = wData2.wallet || wData2;
+                  const fallback = walletObj.main_wallet_balance ?? walletObj.wallet_balance ?? walletObj.balance;
+                  if (fallback != null && Number(fallback) > 0) mainBal = fallback;
+                }
+              }
+            }
+          } catch (_) {}
+        }
+
         setWallet({ ...walletData, balance: Number(mainBal) || 0 });
       }
 
