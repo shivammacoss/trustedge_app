@@ -15,7 +15,9 @@
       "backgroundColor": "#121212"
     },
     "updates": {
-      "enabled": false
+      "enabled": true,
+      "fallbackToCacheTimeout": 3000,
+      "url": "https://u.expo.dev/985ec4ac-3e2f-44d1-9584-70b5d7dc4e5e"
     },
     "ios": {
       "supportsTablet": true,

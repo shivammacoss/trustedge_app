@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
@@ -53,23 +54,31 @@ const WalletScreen = ({ navigation }) => {
   const [upiId, setUpiId] = useState('');
   const [bankInfo, setBankInfo] = useState(null);
 
-  useEffect(() => {
-    loadUser();
-  }, []);
-
-  useEffect(() => {
-    if (user) {
-      // Fetch wallet data first, then set loading false
-      const loadData = async () => {
-        await fetchWalletData();
-        setLoading(false);
+  // Refresh wallet data every time screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      const init = async () => {
+        try {
+          const userData = await SecureStore.getItemAsync('user');
+          if (!userData) {
+            navigation.replace('Login');
+            return;
+          }
+          const parsed = JSON.parse(userData);
+          setUser(parsed);
+          await fetchWalletData();
+        } catch (e) {
+          console.error('Error loading wallet screen:', e);
+        }
+        if (!cancelled) setLoading(false);
       };
-      loadData();
-      // Fetch payment methods and currencies in background
+      init();
       fetchPaymentMethods();
       fetchCurrencies();
-    }
-  }, [user]);
+      return () => { cancelled = true; };
+    }, [])
+  );
 
   const fetchCurrencies = async () => {
     // TrustEdge does not have a currencies endpoint - USD only
@@ -82,21 +91,14 @@ const WalletScreen = ({ navigation }) => {
     return localAmt / effectiveRate;
   };
 
-  const loadUser = async () => {
-    try {
-      const userData = await SecureStore.getItemAsync('user');
-      if (userData) {
-        setUser(JSON.parse(userData));
-      }
-    } catch (e) {
-      console.error('Error loading user:', e);
-    }
-  };
-
   const fetchWalletData = async () => {
     try {
       const token = await SecureStore.getItemAsync('token');
-      if (!token) { setRefreshing(false); return; }
+      if (!token) {
+        setRefreshing(false);
+        navigation.replace('Login');
+        return;
+      }
 
       const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
 
@@ -104,6 +106,14 @@ const WalletScreen = ({ navigation }) => {
         fetch(`${API_URL}/wallet/summary`, { headers }),
         fetch(`${API_URL}/wallet/transactions`, { headers }),
       ]);
+
+      // Token expired or invalid — redirect to login
+      if (walletRes.status === 401 || walletRes.status === 403) {
+        await SecureStore.deleteItemAsync('token');
+        await SecureStore.deleteItemAsync('user');
+        navigation.replace('Login');
+        return;
+      }
 
       if (walletRes.ok) {
         const walletData = await walletRes.json();

@@ -20,6 +20,7 @@ import {
   Linking,
   Image,
   Share,
+  AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable, GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -188,16 +189,55 @@ const TradingProvider = ({ children, navigation, route }) => {
   const [loadingNews, setLoadingNews] = useState(true);
   const [currentMainTab, setCurrentMainTab] = useState('Home'); // Track current tab for notifications
 
+  // Check token expiry — if expired, redirect to login immediately
+  const checkTokenExpiry = useCallback(async () => {
+    try {
+      const userData = await SecureStore.getItemAsync('user');
+      const token = await SecureStore.getItemAsync('token');
+      if (!userData || !token) {
+        navigation.replace('Login');
+        return false;
+      }
+      const parsed = JSON.parse(userData);
+      if (parsed.expires_at && Date.now() >= new Date(parsed.expires_at).getTime()) {
+        console.log('[TrustEdge] Token expired, redirecting to login');
+        await SecureStore.deleteItemAsync('token');
+        await SecureStore.deleteItemAsync('user');
+        navigation.replace('Login');
+        return false;
+      }
+      return true;
+    } catch { return true; }
+  }, [navigation]);
+
   useEffect(() => {
     loadUser();
-    fetchInstrumentsFromAPI(); // Fetch instruments from backend API
+    fetchInstrumentsFromAPI();
+
+    // Check token on app foreground
+    const sub = AppState.addEventListener('change', async (state) => {
+      if (state === 'active') {
+        const valid = await checkTokenExpiry();
+        if (valid && user) {
+          fetchAccounts(user.id || user._id);
+        }
+      }
+    });
+
+    // Periodic token check every 2 minutes
+    const interval = setInterval(checkTokenExpiry, 120000);
+
+    return () => {
+      sub?.remove();
+      clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {
     console.log('[TrustEdge] User state changed:', !!user);
     if (user) {
       console.log('[TrustEdge] User loaded, fetching accounts for user ID:', user.id || user._id);
-      fetchAccounts(user.id || user._id); // TrustEdge uses 'id', fallback to '_id'
+      fetchAccounts(user.id || user._id);
       fetchChallengeAccounts(user.id || user._id);
     } else {
       console.log('[TrustEdge] No user - not fetching accounts');
@@ -600,9 +640,19 @@ const TradingProvider = ({ children, navigation, route }) => {
           'Content-Type': 'application/json'
         }
       });
+
+      // Token expired or invalid — redirect to login
+      if (res.status === 401 || res.status === 403) {
+        console.log('[TrustEdge] Token rejected (401/403), redirecting to login');
+        await SecureStore.deleteItemAsync('token');
+        await SecureStore.deleteItemAsync('user');
+        navigation.replace('Login');
+        return;
+      }
+
       const data = await res.json();
       console.log('[TrustEdge] Accounts response:', data);
-      
+
       const rawList = data.items || data || [];
       const normalized = Array.isArray(rawList) ? rawList.map(normalizeTradingAccountRow) : [];
       // Show both demo and live in the picker (matches web)

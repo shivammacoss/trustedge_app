@@ -75,10 +75,16 @@ const DashboardScreen = () => {
   const fetchAccountData = async () => {
     try {
       const token = await SecureStore.getItemAsync('token');
-      if (!token) return;
+      if (!token) { navigation.navigate('Login'); return; }
       const res = await fetch(`${API_URL}/accounts`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
+      if (res.status === 401 || res.status === 403) {
+        await SecureStore.deleteItemAsync('token');
+        await SecureStore.deleteItemAsync('user');
+        navigation.navigate('Login');
+        return;
+      }
       const data = await res.json();
       const accounts = data.items || data || [];
       if (accounts.length > 0) {
