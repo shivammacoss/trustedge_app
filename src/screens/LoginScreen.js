@@ -169,7 +169,7 @@ const LoginScreen = ({ navigation }) => {
       style={styles.container} 
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <StatusBar barStyle="light-content" backgroundColor="#121212" />
+      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
       <ScrollView 
         style={styles.scrollView} 
         contentContainerStyle={styles.content}
@@ -266,7 +266,7 @@ const LoginScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#ffffff',
   },
   scrollView: {
     flex: 1,
@@ -299,14 +299,14 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   brandName: {
-    color: '#fff',
+    color: '#111',
     fontSize: 22,
     fontWeight: 'bold',
     marginTop: 12,
   },
   tabContainer: {
     flexDirection: 'row',
-    backgroundColor: '#1E1E1E',
+    backgroundColor: '#f2f4f7',
     borderRadius: 12,
     padding: 4,
     marginBottom: 32,
@@ -333,7 +333,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 28,
     fontWeight: 'bold',
-    color: '#fff',
+    color: '#111',
     marginBottom: 8,
   },
   subtitle: {
@@ -344,9 +344,9 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1E1E1E',
+    backgroundColor: '#f7f8fa',
     borderWidth: 1,
-    borderColor: '#333333',
+    borderColor: '#e1e4e8',
     borderRadius: 12,
     marginBottom: 16,
     paddingHorizontal: 16,
@@ -357,7 +357,7 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     paddingVertical: 16,
-    color: '#fff',
+    color: '#111',
     fontSize: 16,
   },
   eyeIcon: {
@@ -394,7 +394,7 @@ const styles = StyleSheet.create({
   line: {
     flex: 1,
     height: 1,
-    backgroundColor: '#333333',
+    backgroundColor: '#e1e4e8',
   },
   dividerText: {
     color: '#666',

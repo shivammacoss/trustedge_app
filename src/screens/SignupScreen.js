@@ -127,7 +127,7 @@ const SignupScreen = ({ navigation }) => {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <StatusBar barStyle="light-content" backgroundColor="#121212" />
+      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.content}
@@ -340,7 +340,7 @@ const SignupScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#ffffff',
   },
   scrollView: {
     flex: 1,
@@ -359,14 +359,14 @@ const styles = StyleSheet.create({
     height: 120,
   },
   brandName: {
-    color: '#fff',
+    color: '#111',
     fontSize: 22,
     fontWeight: 'bold',
     marginTop: 12,
   },
   tabContainer: {
     flexDirection: 'row',
-    backgroundColor: '#111',
+    backgroundColor: '#f2f4f7',
     borderRadius: 12,
     padding: 4,
     marginBottom: 24,
@@ -386,7 +386,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   activeTabText: {
-    color: '#fff',
+    color: '#ffffff',
     fontSize: 15,
     fontWeight: '600',
   },
@@ -401,7 +401,7 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#333',
+    backgroundColor: '#d0d5dd',
   },
   stepDotActive: {
     backgroundColor: '#1a73e8',
@@ -409,14 +409,14 @@ const styles = StyleSheet.create({
   stepLine: {
     flex: 1,
     height: 2,
-    backgroundColor: '#333',
+    backgroundColor: '#d0d5dd',
     marginHorizontal: 8,
     maxWidth: 60,
   },
   title: {
     fontSize: 26,
     fontWeight: 'bold',
-    color: '#fff',
+    color: '#111',
     marginBottom: 6,
   },
   subtitle: {
@@ -427,9 +427,9 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#111',
+    backgroundColor: '#f7f8fa',
     borderWidth: 1,
-    borderColor: '#222',
+    borderColor: '#e1e4e8',
     borderRadius: 12,
     marginBottom: 14,
     paddingHorizontal: 16,
@@ -440,7 +440,7 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     paddingVertical: 16,
-    color: '#fff',
+    color: '#111',
     fontSize: 16,
   },
   eyeIcon: {
@@ -459,21 +459,21 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   buttonText: {
-    color: '#fff',
+    color: '#ffffff',
     fontSize: 16,
     fontWeight: 'bold',
   },
   summaryBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#111',
+    backgroundColor: '#f7f8fa',
     borderRadius: 10,
     padding: 12,
     marginBottom: 20,
     gap: 10,
   },
   summaryText: {
-    color: '#ccc',
+    color: '#333',
     fontSize: 14,
     flex: 1,
   },
