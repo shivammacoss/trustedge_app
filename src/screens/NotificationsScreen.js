@@ -183,13 +183,13 @@ const NotificationsScreen = ({ navigation }) => {
   const getNotificationIcon = (type) => {
     switch (type) {
       case 'TRADE_OPEN':
-        return { name: 'arrow-up-circle', color: '#5a189a', bg: '#5a189a20' };
+        return { name: 'arrow-up-circle', color: '#1a73e8', bg: '#1a73e820' };
       case 'TRADE_CLOSE':
         return { name: 'checkmark-circle', color: '#22c55e', bg: '#22c55e20' };
       case 'STOP_LOSS_HIT':
         return { name: 'alert-circle', color: '#ef4444', bg: '#ef444420' };
       case 'TAKE_PROFIT_HIT':
-        return { name: 'trophy', color: '#5a189a', bg: '#5a189a20' };
+        return { name: 'trophy', color: '#1a73e8', bg: '#1a73e820' };
       case 'PENDING_ORDER':
         return { name: 'time', color: '#a855f7', bg: '#a855f720' };
       case 'PENDING_TRIGGERED':
@@ -197,7 +197,7 @@ const NotificationsScreen = ({ navigation }) => {
       case 'DEPOSIT':
         return { name: 'wallet', color: '#22c55e', bg: '#22c55e20' };
       case 'WITHDRAWAL':
-        return { name: 'arrow-down-circle', color: '#5a189a', bg: '#5a189a20' };
+        return { name: 'arrow-down-circle', color: '#1a73e8', bg: '#1a73e820' };
       case 'COPY_TRADE':
         return { name: 'copy', color: '#06b6d4', bg: '#06b6d420' };
       default:
@@ -348,7 +348,7 @@ const styles = StyleSheet.create({
   backBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
   headerTitle: { fontSize: 18, fontWeight: 'bold' },
   markAllBtn: { paddingHorizontal: 8, paddingVertical: 4 },
-  markAllText: { color: '#5a189a', fontSize: 13, fontWeight: '500' },
+  markAllText: { color: '#1a73e8', fontSize: 13, fontWeight: '500' },
   
   // Unread Banner
   unreadBanner: { 
@@ -358,17 +358,17 @@ const styles = StyleSheet.create({
     marginBottom: 12, 
     paddingHorizontal: 14, 
     paddingVertical: 10, 
-    backgroundColor: '#5a189a20', 
+    backgroundColor: '#1a73e820', 
     borderRadius: 10 
   },
   unreadDot: { 
     width: 8, 
     height: 8, 
     borderRadius: 4, 
-    backgroundColor: '#5a189a', 
+    backgroundColor: '#1a73e8', 
     marginRight: 10 
   },
-  unreadText: { color: '#5a189a', fontSize: 13, fontWeight: '500' },
+  unreadText: { color: '#1a73e8', fontSize: 13, fontWeight: '500' },
   
   // Empty State
   emptyState: { alignItems: 'center', paddingVertical: 60, paddingHorizontal: 40 },
@@ -437,7 +437,7 @@ const styles = StyleSheet.create({
     top: 0, 
     bottom: 0, 
     width: 4, 
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     borderTopLeftRadius: 16,
     borderBottomLeftRadius: 16
   },

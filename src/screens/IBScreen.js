@@ -305,7 +305,7 @@ const IBScreen = ({ navigation, route }) => {
                 'Easy withdrawal to your wallet'
               ].map((benefit, idx) => (
                 <View key={idx} style={styles.benefitRow}>
-                  <Ionicons name="chevron-forward" size={16} color="#5a189a" />
+                  <Ionicons name="chevron-forward" size={16} color="#1a73e8" />
                   <Text style={styles.benefitText}>{benefit}</Text>
                 </View>
               ))}
@@ -363,8 +363,8 @@ const IBScreen = ({ navigation, route }) => {
                 <Text style={[styles.statValue, { color: colors.textPrimary }]}>${ibProfile?.ibWalletBalance?.toFixed(2) || '0.00'}</Text>
               </View>
               <View style={[styles.statCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-                <View style={[styles.statIcon, { backgroundColor: '#5a189a20' }]}>
-                  <Ionicons name="trending-up" size={20} color="#5a189a" />
+                <View style={[styles.statIcon, { backgroundColor: '#1a73e820' }]}>
+                  <Ionicons name="trending-up" size={20} color="#1a73e8" />
                 </View>
                 <Text style={[styles.statLabel, { color: colors.textMuted }]}>Total Earned</Text>
                 <Text style={[styles.statValue, { color: colors.textPrimary }]}>${ibProfile?.totalCommissionEarned?.toFixed(2) || '0.00'}</Text>
@@ -427,7 +427,7 @@ const IBScreen = ({ navigation, route }) => {
             {levelProgress?.nextLevel && (
               <View style={[styles.levelProgressCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
                 <View style={styles.levelProgressHeader}>
-                  <Ionicons name="ribbon" size={20} color="#5a189a" />
+                  <Ionicons name="ribbon" size={20} color="#1a73e8" />
                   <Text style={[styles.levelProgressTitle, { color: colors.textPrimary }]}>Commission Levels</Text>
                 </View>
                 <View style={styles.progressBarContainer}>
@@ -544,15 +544,15 @@ const IBScreen = ({ navigation, route }) => {
                   ) : (
                     downline.map((node, idx) => (
                       <View key={node._id || idx} style={[styles.downlineItem, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-                        <View style={[styles.downlineAvatar, { backgroundColor: node.isIB ? '#5a189a30' : '#33333' }]}>
-                          <Text style={[styles.avatarText, { color: node.isIB ? '#5a189a' : '#888' }]}>{node.firstName?.charAt(0) || '?'}</Text>
+                        <View style={[styles.downlineAvatar, { backgroundColor: node.isIB ? '#1a73e830' : '#33333' }]}>
+                          <Text style={[styles.avatarText, { color: node.isIB ? '#1a73e8' : '#888' }]}>{node.firstName?.charAt(0) || '?'}</Text>
                         </View>
                         <View style={styles.downlineInfo}>
                           <Text style={[styles.downlineName, { color: colors.textPrimary }]}>{node.firstName || 'Unknown'}</Text>
                           <Text style={styles.downlineEmail}>{node.email}</Text>
                         </View>
-                        <View style={[styles.downlineBadge, { backgroundColor: node.isIB ? '#5a189a20' : '#33333' }]}>
-                          <Text style={[styles.downlineBadgeText, { color: node.isIB ? '#5a189a' : '#888' }]}>
+                        <View style={[styles.downlineBadge, { backgroundColor: node.isIB ? '#1a73e820' : '#33333' }]}>
+                          <Text style={[styles.downlineBadgeText, { color: node.isIB ? '#1a73e8' : '#888' }]}>
                             {node.isIB ? 'IB' : 'User'} • L{(node.level || 0) + 1}
                           </Text>
                         </View>
@@ -620,14 +620,14 @@ const styles = StyleSheet.create({
   
   // Apply Container
   applyContainer: { padding: 20, alignItems: 'center' },
-  applyIconContainer: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#5a189a20', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  applyIconContainer: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#1a73e820', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
   applyTitle: { fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 8 },
   applySubtitle: { color: '#888', fontSize: 14, textAlign: 'center', marginBottom: 20 },
   benefitsCard: { borderRadius: 16, padding: 16, width: '100%', marginBottom: 20 },
   benefitsTitle: { fontSize: 14, fontWeight: '600', marginBottom: 12 },
   benefitRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   benefitText: { color: '#888', fontSize: 13, flex: 1 },
-  applyBtn: { backgroundColor: '#5a189a', paddingHorizontal: 40, paddingVertical: 16, borderRadius: 12 },
+  applyBtn: { backgroundColor: '#1a73e8', paddingHorizontal: 40, paddingVertical: 16, borderRadius: 12 },
   applyBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   btnDisabled: { opacity: 0.6 },
   
@@ -673,16 +673,16 @@ const styles = StyleSheet.create({
   progressBarContainer: {},
   progressBarLabels: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   progressLabel: { color: '#888', fontSize: 12 },
-  progressPercent: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
+  progressPercent: { color: '#1a73e8', fontSize: 12, fontWeight: '600' },
   progressBarBg: { height: 6, backgroundColor: '#222', borderRadius: 3, overflow: 'hidden' },
-  progressBarFill: { height: '100%', backgroundColor: '#5a189a', borderRadius: 3 },
+  progressBarFill: { height: '100%', backgroundColor: '#1a73e8', borderRadius: 3 },
   progressHint: { color: '#666', fontSize: 11, marginTop: 6 },
   
   // Tabs
   tabsScroll: { marginBottom: 12 },
   tabs: { flexDirection: 'row', paddingHorizontal: 16, gap: 8 },
   tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
-  tabActive: { backgroundColor: '#5a189a' },
+  tabActive: { backgroundColor: '#1a73e8' },
   tabText: { color: '#888', fontSize: 12, fontWeight: '500' },
   tabTextActive: { color: '#000' },
   
@@ -704,8 +704,8 @@ const styles = StyleSheet.create({
   
   // Referral Item
   referralItem: { flexDirection: 'row', alignItems: 'center', borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1 },
-  referralAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#5a189a30', justifyContent: 'center', alignItems: 'center' },
-  avatarText: { color: '#5a189a', fontSize: 16, fontWeight: 'bold' },
+  referralAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#1a73e830', justifyContent: 'center', alignItems: 'center' },
+  avatarText: { color: '#1a73e8', fontSize: 16, fontWeight: 'bold' },
   referralInfo: { flex: 1, marginLeft: 12 },
   referralName: { fontSize: 14, fontWeight: '600' },
   referralEmail: { color: '#666', fontSize: 12, marginTop: 2 },
@@ -737,7 +737,7 @@ const styles = StyleSheet.create({
   withdrawBalanceValue: { color: '#22c55e', fontSize: 32, fontWeight: 'bold', marginTop: 8 },
   inputLabel: { color: '#888', fontSize: 12, marginBottom: 8 },
   input: { borderRadius: 12, padding: 16, fontSize: 16, borderWidth: 1, marginBottom: 16 },
-  withdrawBtn: { backgroundColor: '#5a189a', padding: 16, borderRadius: 12, alignItems: 'center' },
+  withdrawBtn: { backgroundColor: '#1a73e8', padding: 16, borderRadius: 12, alignItems: 'center' },
   withdrawBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   pendingWithdrawal: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 16 },
   pendingWithdrawalText: { color: '#eab308', fontSize: 13 },

@@ -141,7 +141,7 @@ const SignupScreen = ({ navigation }) => {
             style={styles.logoImage}
             resizeMode="contain"
           />
-          <Text style={styles.brandName}>TrustEdge</Text>
+          <Text style={styles.brandName}>TrustEdgeFX</Text>
         </View>
 
         {/* Tab Switcher */}
@@ -254,7 +254,7 @@ const SignupScreen = ({ navigation }) => {
 
             {/* Summary */}
             <View style={styles.summaryBox}>
-              <Ionicons name="person-circle-outline" size={20} color="#5a189a" />
+              <Ionicons name="person-circle-outline" size={20} color="#1a73e8" />
               <Text style={styles.summaryText}>
                 {formData.first_name} {formData.last_name} · {formData.email}
               </Text>
@@ -321,7 +321,7 @@ const SignupScreen = ({ navigation }) => {
 
             {/* Back Button */}
             <TouchableOpacity style={styles.backButton} onPress={() => setStep(1)}>
-              <Ionicons name="arrow-back" size={20} color="#5a189a" />
+              <Ionicons name="arrow-back" size={20} color="#1a73e8" />
               <Text style={styles.backButtonText}>Back</Text>
             </TouchableOpacity>
 
@@ -355,9 +355,8 @@ const styles = StyleSheet.create({
     marginBottom: 32,
   },
   logoImage: {
-    width: 80,
-    height: 80,
-    borderRadius: 16,
+    width: 120,
+    height: 120,
   },
   brandName: {
     color: '#fff',
@@ -379,7 +378,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   activeTab: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
   },
   tabText: {
     color: '#666',
@@ -405,7 +404,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#333',
   },
   stepDotActive: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
   },
   stepLine: {
     flex: 1,
@@ -448,7 +447,7 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   button: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
@@ -496,7 +495,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   termsLink: {
-    color: '#5a189a',
+    color: '#1a73e8',
   },
   signinContainer: {
     flexDirection: 'row',
@@ -508,7 +507,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   signinLink: {
-    color: '#5a189a',
+    color: '#1a73e8',
     fontSize: 15,
     fontWeight: '600',
   },
@@ -521,7 +520,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   backButtonText: {
-    color: '#5a189a',
+    color: '#1a73e8',
     fontSize: 15,
     fontWeight: '500',
   },

@@ -191,7 +191,7 @@ const DashboardScreen = () => {
 
   const quickActions = [
     { id: 'trade', icon: 'trending-up', label: 'Trade', screen: 'MainTrading', color: '#22c55e', desc: 'Open Chart' },
-    { id: 'wallet', icon: 'wallet-outline', label: 'Wallet', screen: 'Wallet', color: '#5a189a', desc: 'Deposit / withdraw' },
+    { id: 'wallet', icon: 'wallet-outline', label: 'Wallet', screen: 'Wallet', color: '#1a73e8', desc: 'Deposit / withdraw' },
     { id: 'pamm', icon: 'bar-chart-outline', label: 'PAMM', screen: 'Pamm', color: '#06b6d4', desc: 'Fund Managers' },
     { id: 'copy', icon: 'people-circle-outline', label: 'Social', screen: 'Social', color: '#8b5cf6', desc: 'Copy trading' },
     { id: 'academy', icon: 'school-outline', label: 'Academy', screen: 'Academy', color: '#2196f3', desc: 'Learn Trading' },
@@ -273,8 +273,8 @@ const DashboardScreen = () => {
           </Text>
         </View>
         <View style={[styles.quickStatCard, { backgroundColor: colors.bgCard }]}>
-          <View style={[styles.quickStatIcon, { backgroundColor: '#5a189a20' }]}>
-            <Ionicons name="time" size={20} color="#5a189a" />
+          <View style={[styles.quickStatIcon, { backgroundColor: '#1a73e820' }]}>
+            <Ionicons name="time" size={20} color="#1a73e8" />
           </View>
           <Text style={[styles.quickStatLabel, { color: colors.textMuted }]}>Margin Used</Text>
           <Text style={[styles.quickStatValue, { color: colors.textPrimary }]}>
@@ -414,8 +414,8 @@ const styles = StyleSheet.create({
   newsContent: { marginHorizontal: 16 },
   newsItem: { borderRadius: 14, padding: 16, marginBottom: 10 },
   newsItemHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  newsCategory: { backgroundColor: '#5a189a20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
-  newsCategoryText: { color: '#5a189a', fontSize: 11, fontWeight: '600' },
+  newsCategory: { backgroundColor: '#1a73e820', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  newsCategoryText: { color: '#1a73e8', fontSize: 11, fontWeight: '600' },
   newsTitle: { fontSize: 15, fontWeight: '500', lineHeight: 22, marginBottom: 10 },
   newsMeta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   sourceRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },

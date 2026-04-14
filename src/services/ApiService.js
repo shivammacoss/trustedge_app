@@ -364,9 +364,11 @@ class ApiService {
     });
   }
 
-  async closePosition(positionId) {
+  async closePosition(positionId, lots = null) {
+    const body = lots ? { lots } : {};
     return this.request(`/positions/${positionId}/close`, {
       method: 'POST',
+      body: JSON.stringify(body),
     });
   }
 

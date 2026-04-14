@@ -1378,13 +1378,13 @@ const styles = StyleSheet.create({
     borderColor: '#333333',
   },
   primaryCard: {
-    borderColor: '#5a189a',
+    borderColor: '#1a73e8',
     borderWidth: 2,
   },
   primaryBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
@@ -1406,7 +1406,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#5a189a20',
+    backgroundColor: '#1a73e820',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1458,7 +1458,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     paddingVertical: 12,
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     borderRadius: 10,
   },
   depositBtnText: {
@@ -1490,7 +1490,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   setPrimaryBtnText: {
-    color: '#5a189a',
+    color: '#1a73e8',
     fontSize: 14,
   },
   tradeBtn: {
@@ -1499,7 +1499,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 14,
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     borderRadius: 10,
   },
   tradeBtnText: {
@@ -1528,7 +1528,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   tabActive: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
   },
   tabText: {
     color: '#888',
@@ -1572,7 +1572,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   walletBalanceValue: {
-    color: '#5a189a',
+    color: '#1a73e8',
     fontSize: 16,
     fontWeight: 'bold',
   },
@@ -1594,7 +1594,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#5a189a20',
+    backgroundColor: '#1a73e820',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -1622,7 +1622,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   buyBtnSmall: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
@@ -1717,7 +1717,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#5a189a20',
+    backgroundColor: '#1a73e820',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -1760,7 +1760,7 @@ const styles = StyleSheet.create({
   },
   createAccountBtn: {
     flex: 1,
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -1802,7 +1802,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   transferValueGold: {
-    color: '#5a189a',
+    color: '#1a73e8',
     fontSize: 16,
     fontWeight: 'bold',
   },
@@ -1820,7 +1820,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   transferSubmitBtn: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -1832,7 +1832,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   withdrawSubmitBtn: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
@@ -1856,8 +1856,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   accountSelectCardActive: {
-    backgroundColor: '#5a189a',
-    borderColor: '#5a189a',
+    backgroundColor: '#1a73e8',
+    borderColor: '#1a73e8',
   },
   accountSelectId: {
     fontSize: 14,

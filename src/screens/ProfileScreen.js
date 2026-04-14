@@ -446,7 +446,7 @@ const ProfileScreen = ({ navigation }) => {
             setShowEditModal(true);
           }}>
             <View style={styles.actionLeft}>
-              <View style={[styles.actionIcon, { backgroundColor: '#5a189a20' }]}>
+              <View style={[styles.actionIcon, { backgroundColor: '#1a73e820' }]}>
                 <Ionicons name="create-outline" size={20} color={colors.accent} />
               </View>
               <Text style={[styles.actionText, { color: colors.textPrimary }]}>Edit Profile</Text>
@@ -456,7 +456,7 @@ const ProfileScreen = ({ navigation }) => {
           
           <TouchableOpacity style={[styles.actionItem, { backgroundColor: colors.bgCard }]} onPress={() => setShowPasswordModal(true)}>
             <View style={styles.actionLeft}>
-              <View style={[styles.actionIcon, { backgroundColor: '#5a189a20' }]}>
+              <View style={[styles.actionIcon, { backgroundColor: '#1a73e820' }]}>
                 <Ionicons name="lock-closed-outline" size={20} color={colors.accent} />
               </View>
               <Text style={[styles.actionText, { color: colors.textPrimary }]}>Change Password</Text>
@@ -645,7 +645,7 @@ const styles = StyleSheet.create({
   inputLabel: { fontSize: 13, fontWeight: '500', marginBottom: 6 },
   input: { borderRadius: 12, padding: 14, fontSize: 15, marginBottom: 16 },
   
-  submitBtn: { backgroundColor: '#5a189a', borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 8 },
+  submitBtn: { backgroundColor: '#1a73e8', borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 8 },
   submitBtnDisabled: { opacity: 0.6 },
   submitBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 });

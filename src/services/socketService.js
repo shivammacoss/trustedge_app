@@ -21,6 +21,9 @@ class SocketService {
     this.accountListeners = new Map();
     this.prices = {};
     this.isConnected = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnectTimer = null;
   }
 
   async connect() {
@@ -44,6 +47,7 @@ class SocketService {
         console.log('[Socket] WebSocket open');
         this.clearPolling();
         this.isConnected = true;
+        this.reconnectAttempts = 0;
       };
 
       this.ws.onmessage = (event) => {
@@ -68,9 +72,15 @@ class SocketService {
           this.isConnected = false;
           return;
         }
-        console.log('[Socket] WebSocket closed, using REST poll for prices');
-        this.isConnected = this.isPolling;
-        this.startPolling();
+        this.reconnectAttempts++;
+        if (this.reconnectAttempts <= this.maxReconnectAttempts) {
+          const delay = Math.min(2000 * this.reconnectAttempts, 15000);
+          console.log(`[Socket] WebSocket closed, reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+          this.reconnectTimer = setTimeout(() => this.tryWebSocket(), delay);
+        } else {
+          console.log('[Socket] Max reconnect attempts reached, falling back to REST poll');
+          this.startPolling();
+        }
       };
     } catch (e) {
       console.warn('[Socket] WebSocket setup failed:', e?.message);
@@ -146,11 +156,16 @@ class SocketService {
   disconnect() {
     this.intentionalDisconnect = true;
     this.clearPolling();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
     this.isConnected = false;
+    this.reconnectAttempts = 0;
     this.priceListeners.clear();
     console.log('[Socket] Disconnected');
   }

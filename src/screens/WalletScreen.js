@@ -171,9 +171,19 @@ const WalletScreen = ({ navigation }) => {
     }
   };
 
+  const sanitizeAmount = (val) => {
+    // Strip non-numeric chars except decimal point, ensure valid number
+    const cleaned = String(val).replace(/[^0-9.]/g, '');
+    const num = parseFloat(cleaned);
+    if (!Number.isFinite(num) || num <= 0) return null;
+    if (num > 1000000) return null; // Max $1M per transaction
+    return Math.round(num * 100) / 100; // 2 decimal places
+  };
+
   const handleDeposit = async () => {
-    if (!localAmount || parseFloat(localAmount) <= 0) {
-      Alert.alert('Error', 'Please enter a valid amount');
+    const sanitized = sanitizeAmount(localAmount);
+    if (!sanitized) {
+      Alert.alert('Error', 'Please enter a valid amount (max $1,000,000)');
       return;
     }
     if (!selectedMethod) {
@@ -241,11 +251,12 @@ const WalletScreen = ({ navigation }) => {
   };
 
   const handleWithdraw = async () => {
-    if (!amount || parseFloat(amount) <= 0) {
-      Alert.alert('Error', 'Please enter a valid amount');
+    const sanitized = sanitizeAmount(amount);
+    if (!sanitized) {
+      Alert.alert('Error', 'Please enter a valid amount (max $1,000,000)');
       return;
     }
-    if (parseFloat(amount) > wallet.balance) {
+    if (sanitized > wallet.balance) {
       Alert.alert('Error', 'Insufficient balance');
       return;
     }
@@ -833,10 +844,10 @@ const styles = StyleSheet.create({
   balanceAmount: { fontSize: 36, fontWeight: 'bold', marginTop: 8 },
   
   actionButtons: { flexDirection: 'row', gap: 12, marginTop: 24 },
-  depositBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#5a189a', paddingVertical: 14, borderRadius: 12 },
+  depositBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#1a73e8', paddingVertical: 14, borderRadius: 12 },
   depositBtnText: { color: '#000', fontSize: 16, fontWeight: '600' },
   withdrawBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, paddingVertical: 14, borderRadius: 12 },
-  withdrawBtnText: { color: '#5a189a', fontSize: 16, fontWeight: '600' },
+  withdrawBtnText: { color: '#1a73e8', fontSize: 16, fontWeight: '600' },
   
   transactionsSection: { padding: 16 },
   sectionTitle: { fontSize: 18, fontWeight: '600', marginBottom: 16 },
@@ -864,28 +875,28 @@ const styles = StyleSheet.create({
   
   methodsScroll: { marginTop: 8 },
   methodCard: { paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12, marginRight: 8, borderWidth: 1 },
-  methodCardActive: { backgroundColor: '#5a189a', borderColor: '#5a189a' },
+  methodCardActive: { backgroundColor: '#1a73e8', borderColor: '#1a73e8' },
   methodName: { fontSize: 14, fontWeight: '500' },
   
   availableBalance: { padding: 16, borderRadius: 12, marginBottom: 8, borderWidth: 1 },
   availableLabel: { color: '#666', fontSize: 12 },
-  availableAmount: { color: '#5a189a', fontSize: 24, fontWeight: 'bold', marginTop: 4 },
+  availableAmount: { color: '#1a73e8', fontSize: 24, fontWeight: 'bold', marginTop: 4 },
   
-  submitBtn: { backgroundColor: '#5a189a', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 24 },
-  withdrawSubmitBtn: { backgroundColor: '#5a189a' },
+  submitBtn: { backgroundColor: '#1a73e8', padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 24 },
+  withdrawSubmitBtn: { backgroundColor: '#1a73e8' },
   submitBtnDisabled: { opacity: 0.6 },
   submitBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   
   // Currency selection styles
   currencyCard: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, marginRight: 8, alignItems: 'center', minWidth: 60, borderWidth: 1 },
-  currencyCardActive: { backgroundColor: '#5a189a' },
+  currencyCardActive: { backgroundColor: '#1a73e8' },
   currencySymbol: { fontSize: 18, fontWeight: 'bold' },
   currencyName: { color: '#666', fontSize: 10, marginTop: 2 },
   
   // Conversion box styles
-  conversionBox: { backgroundColor: '#5a189a20', borderWidth: 1, borderColor: '#5a189a50', borderRadius: 12, padding: 16, marginTop: 12, alignItems: 'center' },
+  conversionBox: { backgroundColor: '#1a73e820', borderWidth: 1, borderColor: '#1a73e850', borderRadius: 12, padding: 16, marginTop: 12, alignItems: 'center' },
   conversionLabel: { color: '#666', fontSize: 12 },
-  conversionAmount: { color: '#5a189a', fontSize: 24, fontWeight: 'bold', marginTop: 4 },
+  conversionAmount: { color: '#1a73e8', fontSize: 24, fontWeight: 'bold', marginTop: 4 },
   conversionRate: { color: '#666', fontSize: 11, marginTop: 8 },
   
   // Method details styles

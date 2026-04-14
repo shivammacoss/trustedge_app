@@ -24,7 +24,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import * as SecureStore from 'expo-secure-store';
 import { API_URL, API_BASE_URL } from '../config';
@@ -1382,15 +1382,15 @@ const HomeTab = ({ navigation }) => {
             height: 44,
             borderRadius: 22,
             borderWidth: 1.5,
-            borderColor: colors.success,
-            backgroundColor: colors.success + '15',
+            borderColor: colors.primary,
+            backgroundColor: colors.primary + '15',
           }}
         >
-          <Ionicons name="wallet-outline" size={18} color={colors.success} />
+          <Ionicons name="wallet-outline" size={18} color={colors.primary} />
           <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '800' }}>
             ${Number(walletBal).toFixed(2)}
           </Text>
-          <Ionicons name="chevron-down" size={14} color={colors.success} />
+          <Ionicons name="chevron-down" size={14} color={colors.primary} />
         </TouchableOpacity>
 
         {/* Notification bell with badge */}
@@ -1441,12 +1441,12 @@ const HomeTab = ({ navigation }) => {
             width: 44,
             height: 44,
             borderRadius: 22,
-            backgroundColor: colors.success,
+            backgroundColor: colors.primary,
             alignItems: 'center',
             justifyContent: 'center',
           }}
         >
-          <Text style={{ color: '#000', fontSize: 13, fontWeight: '800' }}>{userInitials}</Text>
+          <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>{userInitials}</Text>
         </TouchableOpacity>
       </View>
 
@@ -1473,7 +1473,7 @@ const HomeTab = ({ navigation }) => {
         </TouchableOpacity>
         <TouchableOpacity style={styles.vantageQuickItem} onPress={() => parentNav?.navigate('Wallet')}>
           <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
-            <Ionicons name="wallet-outline" size={22} color={colors.success} />
+            <Ionicons name="wallet-outline" size={22} color={colors.primary} />
           </View>
           <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>Wallet</Text>
         </TouchableOpacity>
@@ -1674,7 +1674,7 @@ const HomeTab = ({ navigation }) => {
             styles.addWatchlistPill,
             { borderColor: isDark ? 'rgba(255,255,255,0.35)' : colors.border },
           ]}
-          onPress={() => navigation.navigate('Markets')}
+          onPress={() => navigation.navigate('Market')}
           activeOpacity={0.85}
         >
           <Ionicons name="add" size={20} color={colors.textPrimary} />
@@ -1895,16 +1895,16 @@ const HomeTab = ({ navigation }) => {
                           paddingVertical: 14,
                           borderBottomWidth: StyleSheet.hairlineWidth,
                           borderBottomColor: colors.border,
-                          backgroundColor: isActive ? '#5a189a15' : 'transparent',
+                          backgroundColor: isActive ? '#1a73e815' : 'transparent',
                           borderLeftWidth: 3,
-                          borderLeftColor: isActive ? '#5a189a' : 'transparent',
+                          borderLeftColor: isActive ? '#1a73e8' : 'transparent',
                         }}
                       >
                         <View style={{
                           width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
-                          backgroundColor: isActive ? '#5a189a30' : '#5a189a15',
+                          backgroundColor: isActive ? '#1a73e830' : '#1a73e815',
                         }}>
-                          <Ionicons name="trophy" size={18} color="#5a189a" />
+                          <Ionicons name="trophy" size={18} color="#1a73e8" />
                         </View>
                         <View style={{ flex: 1, marginLeft: 12 }}>
                           <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>{account.accountId}</Text>
@@ -1917,7 +1917,7 @@ const HomeTab = ({ navigation }) => {
                             ${Number(account.currentBalance || account.balance || 0).toFixed(2)}
                           </Text>
                           {isActive && (
-                            <Ionicons name="checkmark-circle" size={16} color="#5a189a" style={{ marginTop: 2 }} />
+                            <Ionicons name="checkmark-circle" size={16} color="#1a73e8" style={{ marginTop: 2 }} />
                           )}
                         </View>
                       </TouchableOpacity>
@@ -1971,8 +1971,10 @@ const QuotesTab = ({ navigation }) => {
   const toast = useToast();
   const orderScrollRef = useRef(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState('watchlist');
+  const [activeTab, setActiveTab] = useState('FAVOURITES');
   const [expandedSegment, setExpandedSegment] = useState(null);
+  const categoryTabs = ['FAVOURITES', 'ALL', 'FOREX', 'CRYPTO', 'INDICES', 'METALS', 'COMMODITIES'];
+  const categoryScrollRef = useRef(null);
   const [selectedInstrument, setSelectedInstrument] = useState(null);
   const [showOrderPanel, setShowOrderPanel] = useState(false);
   const [orderSide, setOrderSide] = useState('BUY');
@@ -2201,27 +2203,58 @@ const QuotesTab = ({ navigation }) => {
     }
   };
 
-  const toggleStar = (symbol) => {
-    ctx.setInstruments(prev => prev.map(i => 
-      i.symbol === symbol ? { ...i, starred: !i.starred } : i
-    ));
+  // Load saved favourites on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await SecureStore.getItemAsync('market_favourites');
+        if (saved) {
+          const favSymbols = JSON.parse(saved);
+          ctx.setInstruments(prev => prev.map(i => ({
+            ...i,
+            starred: favSymbols.includes(i.symbol),
+          })));
+        }
+      } catch (e) { /* ignore */ }
+    })();
+  }, []);
+
+  const toggleStar = async (symbol) => {
+    ctx.setInstruments(prev => {
+      const updated = prev.map(i => 
+        i.symbol === symbol ? { ...i, starred: !i.starred } : i
+      );
+      // Persist favourites
+      const favSymbols = updated.filter(i => i.starred).map(i => i.symbol);
+      SecureStore.setItemAsync('market_favourites', JSON.stringify(favSymbols)).catch(() => {});
+      return updated;
+    });
   };
 
-  const watchlistInstruments = ctx.instruments.filter(inst => {
-    const matchesSearch = inst.symbol.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      inst.name.toLowerCase().includes(searchTerm.toLowerCase());
-    return inst.starred && matchesSearch;
-  });
+  const getFilteredInstruments = () => {
+    const term = searchTerm.toLowerCase().trim();
+    let filtered = ctx.instruments;
 
-  const getSegmentInstruments = (segment) => {
-    return ctx.instruments.filter(inst => {
-      const matchesSearch = inst.symbol.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        inst.name.toLowerCase().includes(searchTerm.toLowerCase());
-      // Map 'Energy' from backend to 'Commodities' segment in app
-      let instCategory = inst.category === 'Energy' ? 'Commodities' : inst.category;
-      instCategory = normalizeInstrumentCategory(instCategory, inst.symbol);
-      return instCategory === segment && matchesSearch;
-    });
+    // Filter by category tab
+    if (activeTab === 'FAVOURITES') {
+      filtered = filtered.filter(i => i.starred);
+    } else if (activeTab !== 'ALL') {
+      filtered = filtered.filter(inst => {
+        let instCategory = inst.category === 'Energy' ? 'Commodities' : inst.category;
+        instCategory = normalizeInstrumentCategory(instCategory, inst.symbol);
+        return instCategory.toUpperCase() === activeTab;
+      });
+    }
+
+    // Filter by search
+    if (term) {
+      filtered = filtered.filter(inst =>
+        inst.symbol.toLowerCase().includes(term) ||
+        inst.name.toLowerCase().includes(term)
+      );
+    }
+
+    return filtered;
   };
 
   const renderInstrumentItem = (item) => {
@@ -2267,130 +2300,182 @@ const QuotesTab = ({ navigation }) => {
   const searchBorder = isDark ? 'rgba(255,255,255,0.1)' : colors.border;
   const searchIcon = isDark ? 'rgba(255,255,255,0.45)' : colors.textMuted;
   const tabInactiveText = isDark ? 'rgba(255,255,255,0.45)' : colors.textSecondary;
-  const segmentBg = isDark ? '#121212' : colors.bgCard;
-  const segmentCountBg = isDark ? 'rgba(255,255,255,0.08)' : colors.bgSecondary;
+
+  const filteredInstruments = getFilteredInstruments();
+
+  // Simplified instrument row matching screenshot style
+  const renderMarketRow = (item) => {
+    if (!item?.symbol) return null;
+    const sym = item.symbol;
+    const liveTick = ctx.livePrices[sym] || ctx.livePrices[String(sym).toUpperCase()] || {};
+    const bid = liveTick.bid ?? item.bid ?? 0;
+
+    // Category label
+    let catLabel = item.category === 'Energy' ? 'Commodities' : item.category;
+    catLabel = normalizeInstrumentCategory(catLabel, sym);
+    const catDisplay = `${catLabel.toUpperCase()} – ${item.name || sym}`;
+
+    // Pip change from session
+    const sess = sessionStats[sym];
+    const open = sess?.open;
+    let pipChange = 0;
+    let pipStr = '0 pip';
+    let pipPositive = false;
+    if (open != null && Number.isFinite(bid) && bid > 0 && open !== 0) {
+      const digits = sym.includes('JPY') ? 3 : bid > 100 ? 2 : 5;
+      const multiplier = sym.includes('JPY') ? 100 : bid > 100 ? 1 : 10000;
+      pipChange = (bid - open) * multiplier;
+      pipPositive = pipChange >= 0;
+      pipStr = `${pipPositive ? '▲' : '▼'} ${Math.abs(pipChange).toFixed(1)} pip`;
+    }
+
+    const priceDigits = sym.includes('JPY') ? 3 : bid > 100 ? 2 : 5;
+
+    return (
+      <TouchableOpacity
+        key={sym}
+        style={[mktStyles.instrumentRow, { borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : colors.border }]}
+        onPress={() => openTradePanel(item)}
+        activeOpacity={0.7}
+      >
+        {/* Left: Symbol + Star + Category */}
+        <View style={mktStyles.instrLeft}>
+          <View style={mktStyles.instrSymbolRow}>
+            <Text style={[mktStyles.instrSymbol, { color: colors.textPrimary }]}>{sym}</Text>
+            <TouchableOpacity 
+              onPress={(e) => { e?.stopPropagation?.(); toggleStar(sym); }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons 
+                name={item.starred ? 'star' : 'star-outline'} 
+                size={16} 
+                color={item.starred ? '#f59e0b' : colors.textMuted} 
+              />
+            </TouchableOpacity>
+          </View>
+          <Text style={[mktStyles.instrCategory, { color: colors.textMuted }]} numberOfLines={1}>{catDisplay}</Text>
+        </View>
+
+        {/* Right: Price + Pip Change + Add */}
+        <View style={mktStyles.instrRight}>
+          <Text style={[mktStyles.instrPrice, { color: colors.textPrimary }]}>
+            {bid > 0 ? bid.toFixed(priceDigits) : '—'}
+          </Text>
+          <Text style={[mktStyles.instrPip, { color: pipPositive ? '#22c55e' : '#ef4444' }]}>
+            {pipStr}
+          </Text>
+        </View>
+        <TouchableOpacity 
+          onPress={() => navigation.navigate('Chart', { symbol: sym })}
+          hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+          style={{ paddingLeft: 8 }}
+        >
+          <Ionicons name="trending-up" size={22} color={colors.textMuted} />
+        </TouchableOpacity>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: colors.bgPrimary }]}>
-      {/* Search Bar */}
-      <View style={[styles.marketSearchContainer, { backgroundColor: searchBg, borderColor: searchBorder }]}>
-        <Ionicons name="search" size={20} color={searchIcon} />
-        <TextInput
-          style={[styles.searchInput, { color: colors.textPrimary }]}
-          placeholder="Search instruments..."
-          placeholderTextColor={colors.textMuted}
-          value={searchTerm}
-          onChangeText={setSearchTerm}
-        />
-        {searchTerm.length > 0 && (
-          <TouchableOpacity onPress={() => setSearchTerm('')}>
-            <Ionicons name="close-circle" size={20} color={searchIcon} />
+      {/* Account Header */}
+      <View style={[mktStyles.accountHeader, { backgroundColor: isDark ? '#0a0a0a' : colors.bgCard, borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : colors.border }]}>
+        <View style={mktStyles.accountHeaderContent}>
+          <Text style={[mktStyles.accountLabel, { color: colors.textMuted }]}>ACCOUNT</Text>
+          <TouchableOpacity onPress={() => setShowAccountPicker(true)} style={mktStyles.accountRow}>
+            <Text style={[mktStyles.accountId, { color: colors.textPrimary }]}>
+              {ctx.isChallengeMode
+                ? (ctx.selectedChallengeAccount?.accountId || 'Select')
+                : (ctx.selectedAccount?.accountId || ctx.selectedAccount?.accountNumber || 'Select')}
+            </Text>
+            <View style={[mktStyles.liveBadge, { backgroundColor: '#22c55e20' }]}>
+              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#22c55e', marginRight: 4 }} />
+              <Text style={{ color: '#22c55e', fontSize: 11, fontWeight: '700' }}>LIVE</Text>
+            </View>
+            <View style={[mktStyles.centBadge, { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#e8e8e8' }]}>
+              <Text style={[mktStyles.centBadgeText, { color: colors.textPrimary }]}>Cent</Text>
+            </View>
           </TouchableOpacity>
-        )}
+        </View>
       </View>
 
-      {/* Account Selector - Below search bar */}
-      <TouchableOpacity style={[styles.accountSelector, { backgroundColor: searchBg, borderColor: searchBorder }]} onPress={() => setShowAccountPicker(true)}>
-        <View style={styles.accountSelectorLeft}>
-          <View style={[styles.accountIcon, { backgroundColor: isDark ? 'rgba(80,165,241,0.15)' : `${colors.primary}18` }]}>
-            <Ionicons name="wallet" size={16} color={marketAccent} />
-          </View>
-          <View>
-            <Text style={[styles.accountSelectorLabel, { color: colors.textSecondary }]}>Account</Text>
-            <Text style={[styles.accountSelectorValue, { color: colors.textPrimary }]}>
-              {ctx.isChallengeMode 
-                ? `${ctx.selectedChallengeAccount?.accountId || 'Select'} • $${(ctx.selectedChallengeAccount?.currentBalance || 0).toFixed(2)}`
-                : `${ctx.selectedAccount?.accountId || ctx.selectedAccount?.accountNumber || 'Select'} • $${(ctx.selectedAccount?.balance || ctx.accountSummary?.balance || 0).toFixed(2)}`
-              }
+      {/* Search Bar with Go button */}
+      <View style={[mktStyles.searchRow, { backgroundColor: colors.bgPrimary }]}>
+        <View style={[mktStyles.searchBox, { backgroundColor: searchBg, borderColor: searchBorder }]}>
+          <Ionicons name="search" size={18} color={searchIcon} />
+          <TextInput
+            style={[mktStyles.searchInput, { color: colors.textPrimary }]}
+            placeholder="Search symbols..."
+            placeholderTextColor={colors.textMuted}
+            value={searchTerm}
+            onChangeText={setSearchTerm}
+            returnKeyType="search"
+            onSubmitEditing={() => Keyboard.dismiss()}
+          />
+          {searchTerm.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchTerm('')} style={{ padding: 4 }}>
+              <Ionicons name="close-circle" size={18} color={searchIcon} />
+            </TouchableOpacity>
+          )}
+        </View>
+        <TouchableOpacity 
+          style={[mktStyles.goBtn, { backgroundColor: marketAccent }]}
+          onPress={() => Keyboard.dismiss()}
+        >
+          <Text style={mktStyles.goBtnText}>Go</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Horizontal Category Tabs */}
+      <ScrollView
+        ref={categoryScrollRef}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={[mktStyles.categoryScroll, { backgroundColor: colors.bgPrimary }]}
+        contentContainerStyle={mktStyles.categoryScrollContent}
+      >
+        {categoryTabs.map(tab => {
+          const isActive = activeTab === tab;
+          return (
+            <TouchableOpacity
+              key={tab}
+              onPress={() => setActiveTab(tab)}
+              style={[mktStyles.categoryTab, isActive && { borderBottomColor: marketAccent, borderBottomWidth: 2 }]}
+            >
+              <Text style={[
+                mktStyles.categoryTabText,
+                { color: isActive ? marketAccent : tabInactiveText },
+                isActive && { fontWeight: '700' },
+              ]}>
+                {tab === 'FAVOURITES' ? `★ ${tab}` : tab}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
+      {/* Instrument List */}
+      <FlatList
+        data={filteredInstruments}
+        keyExtractor={item => item.symbol}
+        renderItem={({ item }) => renderMarketRow(item)}
+        style={{ flex: 1, backgroundColor: colors.bgPrimary }}
+        contentContainerStyle={{ paddingBottom: 20 }}
+        showsVerticalScrollIndicator={false}
+        ListEmptyComponent={
+          <View style={styles.emptyWatchlist}>
+            <Ionicons name={activeTab === 'FAVOURITES' ? 'star-outline' : 'search-outline'} size={48} color={colors.textMuted} />
+            <Text style={[styles.emptyWatchlistTitle, { color: colors.textPrimary }]}>
+              {activeTab === 'FAVOURITES' ? 'No favourites yet' : 'No instruments found'}
+            </Text>
+            <Text style={[styles.emptyWatchlistText, { color: colors.textSecondary }]}>
+              {activeTab === 'FAVOURITES' 
+                ? 'Tap the ★ star icon on any instrument to add it to your favourites' 
+                : 'Try a different search term or category'}
             </Text>
           </View>
-        </View>
-        <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
-      </TouchableOpacity>
-
-      {/* Watchlist / Markets Toggle */}
-      <View style={[styles.marketTabsContainer, { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : colors.bgSecondary }]}>
-        <TouchableOpacity
-          style={[styles.marketTabBtn, activeTab === 'watchlist' && { backgroundColor: marketAccent }]}
-          onPress={() => setActiveTab('watchlist')}
-        >
-          <Text style={[styles.marketTabText, { color: tabInactiveText }, activeTab === 'watchlist' && styles.marketTabTextActive]}>
-            Watchlist
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.marketTabBtn, activeTab === 'markets' && { backgroundColor: marketAccent }]}
-          onPress={() => setActiveTab('markets')}
-        >
-          <Text style={[styles.marketTabText, { color: tabInactiveText }, activeTab === 'markets' && styles.marketTabTextActive]}>
-            Markets
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Content */}
-      <ScrollView style={[styles.marketContent, { backgroundColor: colors.bgPrimary }]} showsVerticalScrollIndicator={false}>
-        {activeTab === 'watchlist' ? (
-          <>
-            {watchlistInstruments.length === 0 ? (
-              <View style={styles.emptyWatchlist}>
-                <Ionicons name="star-outline" size={48} color={colors.textMuted} />
-                <Text style={[styles.emptyWatchlistTitle, { color: colors.textPrimary }]}>No instruments in watchlist</Text>
-                <Text style={[styles.emptyWatchlistText, { color: colors.textSecondary }]}>
-                  Tap the star icon on any instrument to add it to your watchlist
-                </Text>
-              </View>
-            ) : (
-              watchlistInstruments.map(item => renderInstrumentItem(item))
-            )}
-          </>
-        ) : (
-          <>
-            {segments.map(segment => {
-              const segmentInstruments = getSegmentInstruments(segment);
-              const isExpanded = expandedSegment === segment;
-              return (
-                <View key={segment} style={[styles.segmentContainer, { backgroundColor: segmentBg, borderColor: colors.border }]}>
-                  <TouchableOpacity 
-                    style={[styles.segmentHeader, { backgroundColor: segmentBg }]}
-                    onPress={() => setExpandedSegment(isExpanded ? null : segment)}
-                    activeOpacity={0.7}
-                  >
-                    <View style={styles.segmentHeaderLeft}>
-                      <Ionicons 
-                        name={
-                          segment === 'Forex' ? 'swap-horizontal'
-                            : segment === 'Metals' ? 'diamond'
-                            : segment === 'Commodities' ? 'flame'
-                            : segment === 'Crypto' ? 'logo-bitcoin'
-                            : segment === 'Indices' ? 'stats-chart'
-                            : 'briefcase'
-                        }
-                        size={20}
-                        color={marketAccent}
-                      />
-                      <Text style={[styles.segmentTitle, { color: colors.textPrimary }]}>{segment}</Text>
-                      <View style={[styles.segmentCount, { backgroundColor: segmentCountBg }]}>
-                        <Text style={[styles.segmentCountText, { color: colors.textMuted }]}>{segmentInstruments.length}</Text>
-                      </View>
-                    </View>
-                    <Ionicons 
-                      name={isExpanded ? "chevron-up" : "chevron-down"} 
-                      size={20} 
-                      color={colors.textMuted} 
-                    />
-                  </TouchableOpacity>
-                  {isExpanded && (
-                    <View style={[styles.segmentInstruments, { borderTopColor: colors.border }]}>
-                      {segmentInstruments.map(item => renderInstrumentItem(item))}
-                    </View>
-                  )}
-                </View>
-              );
-            })}
-          </>
-        )}
-      </ScrollView>
+        }
+      />
 
       {/* Order Panel Slide Up - Full Order Types */}
       <Modal visible={showOrderPanel} animationType="slide" transparent>
@@ -2421,9 +2506,17 @@ const QuotesTab = ({ navigation }) => {
                   <Text style={[styles.orderPanelSymbol, { color: colors.textPrimary }]}>{selectedInstrument?.symbol}</Text>
                   <Text style={[styles.orderPanelName, { color: colors.textMuted }]}>{selectedInstrument?.name}</Text>
                 </View>
-                <TouchableOpacity onPress={() => setShowOrderPanel(false)} style={styles.orderCloseBtn}>
-                  <Ionicons name="close" size={24} color={colors.textMuted} />
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  <TouchableOpacity 
+                    onPress={() => { setShowOrderPanel(false); navigation.navigate('Chart', { symbol: selectedInstrument?.symbol }); }}
+                    style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#22c55e', justifyContent: 'center', alignItems: 'center' }}
+                  >
+                    <Ionicons name="trending-up" size={20} color="#fff" />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setShowOrderPanel(false)} style={styles.orderCloseBtn}>
+                    <Ionicons name="close" size={24} color={colors.textMuted} />
+                  </TouchableOpacity>
+                </View>
               </View>
 
               {/* Leverage Display (from account) */}
@@ -2616,7 +2709,7 @@ const QuotesTab = ({ navigation }) => {
                     placeholder="Optional"
                     placeholderTextColor={colors.textMuted}
                     keyboardType="numbers-and-punctuation"
-                    selectionColor="#5a189a"
+                    selectionColor="#1a73e8"
                     onFocus={() => {
                       setTimeout(() => {
                         orderScrollRef.current?.scrollToEnd({ animated: true });
@@ -2633,7 +2726,7 @@ const QuotesTab = ({ navigation }) => {
                     placeholder="Optional"
                     placeholderTextColor={colors.textMuted}
                     keyboardType="numbers-and-punctuation"
-                    selectionColor="#5a189a"
+                    selectionColor="#1a73e8"
                     onFocus={() => {
                       setTimeout(() => {
                         orderScrollRef.current?.scrollToEnd({ animated: true });
@@ -2722,7 +2815,7 @@ const QuotesTab = ({ navigation }) => {
                   {ctx.challengeAccounts.filter(acc => acc.status === 'ACTIVE').map(account => (
                     <TouchableOpacity 
                       key={account._id}
-                      style={[styles.accountPickerItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border, borderLeftWidth: 3, borderLeftColor: '#5a189a' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && styles.accountPickerItemActive]}
+                      style={[styles.accountPickerItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border, borderLeftWidth: 3, borderLeftColor: '#1a73e8' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && styles.accountPickerItemActive]}
                       onPress={() => { 
                         ctx.setIsChallengeMode(true);
                         ctx.setSelectedChallengeAccount(account); 
@@ -2730,8 +2823,8 @@ const QuotesTab = ({ navigation }) => {
                       }}
                     >
                       <View style={styles.accountPickerItemLeft}>
-                        <View style={[styles.accountPickerIcon, { backgroundColor: '#5a189a20' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && { backgroundColor: '#5a189a40' }]}>
-                          <Ionicons name="trophy" size={20} color="#5a189a" />
+                        <View style={[styles.accountPickerIcon, { backgroundColor: '#1a73e820' }, ctx.isChallengeMode && ctx.selectedChallengeAccount?._id === account._id && { backgroundColor: '#1a73e840' }]}>
+                          <Ionicons name="trophy" size={20} color="#1a73e8" />
                         </View>
                         <View>
                           <Text style={[styles.accountPickerNumber, { color: colors.textPrimary }]}>{account.accountId}</Text>
@@ -2741,7 +2834,7 @@ const QuotesTab = ({ navigation }) => {
                       <View style={styles.accountPickerItemRight}>
                         <Text style={[styles.accountPickerBalance, { color: colors.textPrimary }]}>${(account.currentBalance || account.balance || 0).toFixed(2)}</Text>
                         {ctx.isChallengeMode && (ctx.selectedChallengeAccount?.id === account.id || ctx.selectedChallengeAccount?._id === account._id) && (
-                          <Ionicons name="checkmark-circle" size={20} color="#5a189a" />
+                          <Ionicons name="checkmark-circle" size={20} color="#1a73e8" />
                         )}
                       </View>
                     </TouchableOpacity>
@@ -2857,6 +2950,9 @@ const TradeTab = () => {
   const [detailTrade, setDetailTrade] = useState(null);
   const [showHistoryDetails, setShowHistoryDetails] = useState(false);
   const [historyDetailTrade, setHistoryDetailTrade] = useState(null);
+  const [showPartialClose, setShowPartialClose] = useState(false);
+  const [partialCloseTrade, setPartialCloseTrade] = useState(null);
+  const [partialPercent, setPartialPercent] = useState(100);
   
   // History filter states
   const [historyFilter, setHistoryFilter] = useState('all');
@@ -2903,8 +2999,15 @@ const TradeTab = () => {
       : (trade.openPrice - currentPrice) * trade.quantity * trade.contractSize;
   };
 
-  // Close single trade
-  const closeTrade = async (trade) => {
+  // Open partial close modal
+  const openPartialCloseModal = (trade) => {
+    setPartialCloseTrade(trade);
+    setPartialPercent(100);
+    setShowPartialClose(true);
+  };
+
+  // Close single trade (full or partial)
+  const closeTrade = async (trade, closeLots = null) => {
     if (closingTradeId) return;
     const prices = ctx.livePrices[trade.symbol];
     if (!prices?.bid || !prices?.ask) {
@@ -2916,20 +3019,23 @@ const TradeTab = () => {
     try {
       const token = await SecureStore.getItemAsync('token');
       const positionId = trade.id || trade._id;
+      const body = closeLots ? { lots: closeLots } : {};
       
       const res = await fetch(`${API_URL}/positions/${positionId}/close`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
-        }
+        },
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       console.log('[TrustEdge] Close position response:', data);
       
       if (res.ok) {
         const pnl = data.profit || 0;
-        toast?.showToast(`Closed! P/L: $${pnl.toFixed(2)}`, pnl >= 0 ? 'success' : 'warning');
+        const label = closeLots ? `Partial close (${closeLots} lots)` : 'Closed';
+        toast?.showToast(`${label}! P/L: $${pnl.toFixed(2)}`, pnl >= 0 ? 'success' : 'warning');
         ctx.fetchOpenTrades();
         ctx.fetchTradeHistory();
         ctx.fetchAccountSummary();
@@ -2942,6 +3048,15 @@ const TradeTab = () => {
     } finally {
       setClosingTradeId(null);
     }
+  };
+
+  // Confirm partial close from modal
+  const confirmPartialClose = () => {
+    if (!partialCloseTrade) return;
+    const totalLots = partialCloseTrade.quantity || partialCloseTrade.lots || 0;
+    const closeLots = partialPercent === 100 ? null : parseFloat((totalLots * partialPercent / 100).toFixed(2));
+    setShowPartialClose(false);
+    closeTrade(partialCloseTrade, closeLots);
   };
 
   // Close all trades (all, profit, or loss)
@@ -3194,219 +3309,189 @@ const TradeTab = () => {
   const todayPnlColor = todayPnlVal >= 0 ? colors.profitColor : colors.lossColor;
 
   return (
-    <View style={[styles.tradeDashRoot, { backgroundColor: isDark ? colors.bgPrimary : colors.bgPrimary }]}>
-      {/* Top strip — scroll for all account stats */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={true}
-        style={styles.tradeSummaryStrip}
-        contentContainerStyle={[
-          styles.tradeSummaryStripContent,
-          { paddingTop: Math.max(insets.top, 12) + 8, paddingBottom: 12 },
-        ]}
-      >
+    <View style={[styles.tradeDashRoot, { backgroundColor: colors.bgPrimary }]}>
+      {/* Account Header - matching Market screen style */}
+      <View style={[ordStyles.accountHeader, { backgroundColor: isDark ? '#0a0a0a' : colors.bgCard, borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : colors.border }]}>
+        <View style={ordStyles.accountHeaderTop}>
+          <Text style={[ordStyles.accountLabel, { color: colors.textMuted }]}>ACCOUNT</Text>
+          <View style={ordStyles.accountRow}>
+            <Text style={[ordStyles.accountId, { color: colors.textPrimary }]}>{accountDisplay}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: '#22c55e20' }}>
+              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#22c55e', marginRight: 4 }} />
+              <Text style={{ color: '#22c55e', fontSize: 11, fontWeight: '700' }}>LIVE</Text>
+            </View>
+            <View style={{ paddingHorizontal: 10, paddingVertical: 3, borderRadius: 10, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#e8e8e8' }}>
+              <Text style={{ color: colors.textPrimary, fontSize: 12, fontWeight: '600' }}>Cent</Text>
+            </View>
+          </View>
+        </View>
+        {/* Stats Row */}
+        <View style={ordStyles.statsGrid}>
+          <View style={ordStyles.statItem}>
+            <Text style={[ordStyles.statLabel, { color: colors.textMuted }]}>Balance</Text>
+            <Text style={[ordStyles.statValue, { color: colors.textPrimary }]}>{balanceVal.toFixed(2)}</Text>
+          </View>
+          <View style={ordStyles.statItem}>
+            <Text style={[ordStyles.statLabel, { color: colors.textMuted }]}>Equity</Text>
+            <Text style={[ordStyles.statValue, { color: colors.textPrimary }]}>{ctx.realTimeEquity.toFixed(2)}</Text>
+          </View>
+          <View style={ordStyles.statItem}>
+            <Text style={[ordStyles.statLabel, { color: colors.textMuted }]}>Credit</Text>
+            <Text style={[ordStyles.statValue, { color: colors.textPrimary }]}>{creditVal.toFixed(2)}</Text>
+          </View>
+          <View style={ordStyles.statItem}>
+            <Text style={[ordStyles.statLabel, { color: colors.textMuted }]}>Used Margin</Text>
+            <Text style={[ordStyles.statValue, { color: colors.textPrimary }]}>{totalUsedMargin.toFixed(2)}</Text>
+          </View>
+        </View>
+        <View style={ordStyles.statsGrid}>
+          <View style={ordStyles.statItem}>
+            <Text style={[ordStyles.statLabel, { color: colors.textMuted }]}>Free Margin</Text>
+            <Text style={[ordStyles.statValue, { color: '#22c55e' }]}>{ctx.realTimeFreeMargin.toFixed(2)}</Text>
+          </View>
+          <View style={ordStyles.statItem}>
+            <Text style={[ordStyles.statLabel, { color: colors.textMuted }]}>Floating PL</Text>
+            <Text style={[ordStyles.statValue, { color: floatColor }]}>{floatPl >= 0 ? '+' : ''}{floatPl.toFixed(2)}</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Tabs: Open | Pending | History */}
+      <View style={[ordStyles.tabsRow, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}>
         {[
-          { label: 'Balance', value: balanceVal.toFixed(2), valueColor: colors.textPrimary },
-          { label: 'Equity', value: ctx.realTimeEquity.toFixed(2), valueColor: colors.textPrimary },
-          { label: 'Credit', value: creditVal.toFixed(2), valueColor: colors.textPrimary },
-          { label: 'Used Margin', value: totalUsedMargin.toFixed(2), valueColor: colors.textPrimary },
-          { label: 'Free Margin', value: ctx.realTimeFreeMargin.toFixed(2), valueColor: colors.accent },
-          { label: 'Floating PL', value: `${floatPl >= 0 ? '+' : ''}${floatPl.toFixed(2)}`, valueColor: floatColor },
-          { label: "Today's P&L", value: `${todayPnlVal >= 0 ? '+' : ''}${todayPnlVal.toFixed(2)}`, valueColor: todayPnlColor },
-        ].map((s) => (
-          <View
-            key={s.label}
-            style={[
-              styles.tradeStatPill,
-              {
-                backgroundColor: isDark ? colors.bgCard : colors.bgSecondary,
-                borderColor: colors.border,
-              },
-            ]}
-          >
-            <Text style={[styles.tradeStatLabel, { color: colors.textSecondary }]}>{s.label}</Text>
-            <Text style={[styles.tradeStatValue, { color: s.valueColor }]} numberOfLines={1}>
-              {s.value}
-            </Text>
-          </View>
-        ))}
-      </ScrollView>
-
-      <View
-        style={[
-          styles.tradeDashCard,
-          {
-            backgroundColor: colors.bgCard,
-            borderColor: colors.border,
-            shadowColor: isDark ? '#000' : '#0f172a',
-          },
-        ]}
-      >
-        {/* Open | Pending | History */}
-        <View style={[styles.tradeDashTabsRow, { borderBottomColor: colors.border }]}>
-          {[
-            { id: 'positions', title: 'Open', count: ctx.openTrades?.length ?? 0 },
-            { id: 'pending', title: 'Pending', count: ctx.pendingOrders?.length ?? 0 },
-            { id: 'history', title: 'History', count: ctx.tradeHistory?.length ?? 0 },
-          ].map((tab) => (
-            <TouchableOpacity
-              key={tab.id}
-              style={styles.tradeDashTabHit}
-              onPress={() => setTradeTab(tab.id)}
-              activeOpacity={0.7}
-            >
-              <Text
-                style={[
-                  styles.tradeDashTabLabel,
-                  { color: colors.textMuted },
-                  tradeTab === tab.id && { color: colors.primary, fontWeight: '700' },
-                ]}
-              >
-                {tab.title} ({tab.count})
-              </Text>
-              {tradeTab === tab.id ? (
-                <View style={[styles.tradeDashTabUnderline, { backgroundColor: colors.primary }]} />
-              ) : (
-                <View style={styles.tradeDashTabUnderlinePlaceholder} />
-              )}
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        {/* Toolbar: refresh + CSV */}
-        <View style={[styles.tradeToolbarRow, { borderBottomColor: colors.border }]}>
+          { id: 'positions', title: 'Open', count: ctx.openTrades?.length ?? 0 },
+          { id: 'pending', title: 'Pending', count: ctx.pendingOrders?.length ?? 0 },
+          { id: 'history', title: 'History', count: ctx.tradeHistory?.length ?? 0 },
+        ].map((tab) => (
           <TouchableOpacity
-            style={[styles.tradeToolOutlineBtn, { borderColor: colors.border }]}
-            onPress={onTradeRefresh}
-            disabled={refreshing}
+            key={tab.id}
+            style={[ordStyles.tabItem, tradeTab === tab.id && { borderBottomColor: colors.primary, borderBottomWidth: 2 }]}
+            onPress={() => setTradeTab(tab.id)}
+            activeOpacity={0.7}
           >
-            {refreshing ? (
-              <ActivityIndicator size="small" color={colors.primary} />
-            ) : (
-              <Ionicons name="refresh-outline" size={20} color={colors.primary} />
-            )}
-            <Text style={[styles.tradeToolBtnLabel, { color: colors.textPrimary }]}>Refresh</Text>
+            <Text style={[ordStyles.tabTitle, { color: tradeTab === tab.id ? colors.textPrimary : colors.textMuted }, tradeTab === tab.id && { fontWeight: '700' }]}>
+              {tab.title}
+            </Text>
+            <Text style={[ordStyles.tabCount, { color: tradeTab === tab.id ? colors.textPrimary : colors.textMuted }]}>
+              ({tab.count})
+            </Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.tradeToolOutlineBtn, { borderColor: colors.border }]} onPress={exportTradeCsv}>
-            <Ionicons name="download-outline" size={20} color={colors.primary} />
-            <Text style={[styles.tradeToolBtnLabel, { color: colors.textPrimary }]}>CSV</Text>
-          </TouchableOpacity>
-        </View>
+        ))}
+      </View>
 
-        {tradeTab === 'positions' && ctx.openTrades.length > 0 && (
-          <View style={[styles.closeAllRow, { backgroundColor: colors.bgSecondary, borderBottomColor: colors.border, borderBottomWidth: 1 }]}>
-            <TouchableOpacity style={styles.closeAllBtn} onPress={() => closeAllTrades('all')}>
-              <Text style={styles.closeAllText}>Close All ({ctx.openTrades.length})</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.closeProfitBtn} onPress={() => closeAllTrades('profit')}>
-              <Text style={styles.closeProfitText}>Close Profit</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.closeLossBtn} onPress={() => closeAllTrades('loss')}>
-              <Text style={styles.closeLossText}>Close Loss</Text>
-            </TouchableOpacity>
-          </View>
-        )}
+      {/* Toolbar: Refresh + Download CSV */}
+      <View style={[ordStyles.toolbar, { backgroundColor: colors.bgPrimary, borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : colors.border }]}>
+        <TouchableOpacity style={ordStyles.toolBtn} onPress={onTradeRefresh} disabled={refreshing}>
+          {refreshing ? <ActivityIndicator size="small" color={colors.primary} /> : <Ionicons name="refresh-outline" size={18} color={colors.primary} />}
+          <Text style={[ordStyles.toolBtnText, { color: colors.textPrimary }]}>Refresh</Text>
+        </TouchableOpacity>
+        <View style={{ flex: 1 }} />
+        <TouchableOpacity style={ordStyles.toolBtn} onPress={exportTradeCsv}>
+          <Ionicons name="download-outline" size={18} color={colors.primary} />
+          <Text style={[ordStyles.toolBtnText, { color: colors.textPrimary }]}>Download CSV</Text>
+        </TouchableOpacity>
+      </View>
 
-        <ScrollView
-          style={styles.tradesList}
-          nestedScrollEnabled
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onTradeRefresh} tintColor={colors.primary} />}
-        >
+      {/* Content */}
+      <ScrollView
+        style={{ flex: 1, backgroundColor: colors.bgPrimary }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onTradeRefresh} tintColor={colors.primary} />}
+      >
         {tradeTab === 'positions' && (
           ctx.openTrades.length === 0 ? (
-            <View style={styles.emptyState}>
+            <View style={ordStyles.emptyWrap}>
               <Ionicons name="trending-up-outline" size={48} color={colors.textMuted} />
-              <Text style={[styles.emptyText, { color: colors.textMuted }]}>No open positions</Text>
+              <Text style={[ordStyles.emptyText, { color: colors.textMuted }]}>No open positions</Text>
             </View>
           ) : (
-            ctx.openTrades.map((trade) => {
-              const pnl = ctx.calculatePnl(trade);
-              const prices = ctx.livePrices[trade.symbol];
-              const currentPrice = trade.side === 'BUY' ? prices?.bid : prices?.ask;
+            <>
+              {ctx.openTrades.map((trade) => {
+                const pnl = ctx.calculatePnl(trade);
+                const prices = ctx.livePrices[trade.symbol];
+                const currentPrice = trade.side === 'BUY' ? prices?.bid : prices?.ask;
+                const slVal = trade.sl || trade.stopLoss || trade.stop_loss;
+                const tpVal = trade.tp || trade.takeProfit || trade.take_profit;
+                const acctId = ctx.isChallengeMode ? ctx.selectedChallengeAccount?.accountId : (ctx.selectedAccount?.accountId || ctx.selectedAccount?.accountNumber);
 
-              const renderRightActions = () => (
-                <TouchableOpacity style={styles.swipeCloseBtn} onPress={() => closeTrade(trade)}>
-                  <Ionicons name="close-circle" size={24} color="#fff" />
-                  <Text style={styles.swipeCloseText}>Close</Text>
-                </TouchableOpacity>
-              );
-
-              return (
-                <Swipeable
-                  key={trade._id || trade.id}
-                  renderRightActions={renderRightActions}
-                  rightThreshold={40}
-                  overshootRight={false}
-                >
-                  <TouchableOpacity
-                    style={[styles.positionItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}
-                    onPress={() => { setDetailTrade(trade); setShowTradeDetails(true); }}
-                  >
-                    <View style={styles.positionRow}>
-                      <View style={styles.positionInfo}>
-                        <View style={styles.positionSymbolRow}>
-                          <Text style={[styles.positionSymbol, { color: colors.textPrimary }]}>{trade.symbol}</Text>
-                          <View style={[styles.sideBadge, { backgroundColor: trade.side === 'BUY' ? '#22c55e20' : '#ef444420' }]}>
-                            <Text style={[styles.sideText, { color: trade.side === 'BUY' ? '#22c55e' : '#ef4444' }]}>{trade.side}</Text>
-                          </View>
+                return (
+                  <View key={trade._id || trade.id} style={[ordStyles.tradeCard, { backgroundColor: colors.bgCard, borderColor: isDark ? 'rgba(255,255,255,0.06)' : colors.border }]}>
+                    {/* Row 1: Symbol + Side + Self badge + PnL */}
+                    <View style={ordStyles.cardRow1}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={[ordStyles.cardSymbol, { color: colors.textPrimary }]}>{trade.symbol}</Text>
+                        <Text style={{ color: trade.side === 'BUY' ? '#2196f3' : '#ef4444', fontSize: 12, fontWeight: '700' }}>{trade.side}</Text>
+                        <View style={{ backgroundColor: isDark ? 'rgba(76,175,80,0.15)' : '#e8f5e9', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                          <Text style={{ color: '#4caf50', fontSize: 10, fontWeight: '700' }}>Self</Text>
                         </View>
-                        <Text style={[styles.positionDetail, { color: colors.textMuted }]}>{trade.quantity} lots @ {trade.openPrice?.toFixed(5)}</Text>
-                        {(trade.sl || trade.stopLoss || trade.tp || trade.takeProfit) && (
-                          <Text style={[styles.slTpText, { color: colors.textMuted }]}>
-                            {(trade.sl || trade.stopLoss) ? `SL: ${trade.sl || trade.stopLoss}` : ''} {(trade.tp || trade.takeProfit) ? `TP: ${trade.tp || trade.takeProfit}` : ''}
-                          </Text>
-                        )}
                       </View>
-                      <View style={styles.positionActions}>
-                        <TouchableOpacity style={styles.editBtn} onPress={(e) => { e.stopPropagation?.(); openSlTpModal(trade); }}>
-                          <Ionicons name="pencil" size={16} color={colors.accent} />
+                      <Text style={[ordStyles.cardPnl, { color: pnl >= 0 ? '#22c55e' : '#ef4444' }]}>
+                        {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                      </Text>
+                    </View>
+                    {/* Row 2: Qty, Open, Now */}
+                    <View style={ordStyles.cardRow2}>
+                      <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>Qty <Text style={{ color: colors.textPrimary, fontWeight: '600' }}>{trade.quantity}</Text></Text>
+                      <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>Open <Text style={{ color: colors.textPrimary, fontWeight: '600' }}>{trade.openPrice?.toFixed(5)}</Text></Text>
+                      <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>Now <Text style={{ color: colors.textPrimary, fontWeight: '600' }}>{currentPrice?.toFixed(5) || '—'}</Text></Text>
+                    </View>
+                    {/* Row 3: Gross, Fee, Acct */}
+                    <View style={ordStyles.cardRow2}>
+                      <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>Gross <Text style={{ color: pnl >= 0 ? '#22c55e' : '#ef4444', fontWeight: '600' }}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</Text></Text>
+                      <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>Fee <Text style={{ color: '#f59e0b', fontWeight: '600' }}>${(trade.commission || 0).toFixed(2)}</Text></Text>
+                      <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>Acct <Text style={{ color: colors.textPrimary, fontWeight: '600' }}>{acctId || '—'}</Text></Text>
+                    </View>
+                    {/* Row 4: SL/TP + Edit + CLOSE */}
+                    <View style={ordStyles.cardRow4}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={[ordStyles.cardSlTp, { color: colors.textMuted }]}>SL: {slVal || '–'}  TP: {tpVal || '–'}</Text>
+                        <TouchableOpacity onPress={() => openSlTpModal(trade)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                          <Ionicons name="pencil-outline" size={14} color={colors.textMuted} />
                         </TouchableOpacity>
                       </View>
-                      <View style={styles.positionPnlCol}>
-                        <Text style={[styles.positionPnl, { color: pnl >= 0 ? '#22c55e' : '#ef4444' }]}>
-                          ${pnl >= 0 ? '' : '-'}{Math.abs(pnl).toFixed(2)}
-                        </Text>
-                        <Text style={[styles.currentPriceText, { color: colors.textMuted }]}>{currentPrice?.toFixed(5) || '-'}</Text>
-                      </View>
+                      <TouchableOpacity
+                        style={ordStyles.closeBtn}
+                        onPress={() => openPartialCloseModal(trade)}
+                        disabled={closingTradeId === (trade.id || trade._id)}
+                      >
+                        <Text style={ordStyles.closeBtnText}>{closingTradeId === (trade.id || trade._id) ? 'CLOSING...' : 'CLOSE'}</Text>
+                      </TouchableOpacity>
                     </View>
-                  </TouchableOpacity>
-                </Swipeable>
-              );
-            })
+                  </View>
+                );
+              })}
+            </>
           )
         )}
 
         {tradeTab === 'pending' && (
           ctx.pendingOrders.length === 0 ? (
-            <View style={styles.emptyState}>
+            <View style={ordStyles.emptyWrap}>
               <Ionicons name="time-outline" size={48} color={colors.textMuted} />
-              <Text style={[styles.emptyText, { color: colors.textMuted }]}>No pending orders</Text>
+              <Text style={[ordStyles.emptyText, { color: colors.textMuted }]}>No pending orders</Text>
             </View>
           ) : (
             ctx.pendingOrders.map((order) => (
-              <View key={order._id || order.id} style={[styles.positionItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}>
-                <View style={styles.positionRow}>
-                  <View style={styles.positionInfo}>
-                    <View style={styles.positionSymbolRow}>
-                      <Text style={[styles.positionSymbol, { color: colors.textPrimary }]}>{order.symbol}</Text>
-                      <View style={[styles.sideBadge, { backgroundColor: '#eab30820' }]}>
-                        <Text style={[styles.sideText, { color: '#eab308' }]}>{order.orderType}</Text>
-                      </View>
+              <View key={order._id || order.id} style={[ordStyles.tradeCard, { backgroundColor: colors.bgCard, borderColor: isDark ? 'rgba(255,255,255,0.06)' : colors.border }]}>
+                <View style={ordStyles.cardRow1}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={[ordStyles.cardSymbol, { color: colors.textPrimary }]}>{order.symbol}</Text>
+                    <View style={{ backgroundColor: '#eab30820', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                      <Text style={{ color: '#eab308', fontSize: 10, fontWeight: '700' }}>{order.orderType}</Text>
                     </View>
-                    <Text style={[styles.positionDetail, { color: colors.textMuted }]}>{order.quantity} lots @ {order.pendingPrice?.toFixed(5)}</Text>
-                    {(order.sl || order.stopLoss || order.tp || order.takeProfit) && (
-                      <Text style={[styles.slTpText, { color: colors.textMuted }]}>
-                        {(order.sl || order.stopLoss) ? `SL: ${order.sl || order.stopLoss}` : ''} {(order.tp || order.takeProfit) ? `TP: ${order.tp || order.takeProfit}` : ''}
-                      </Text>
-                    )}
                   </View>
+                </View>
+                <View style={ordStyles.cardRow2}>
+                  <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>Qty <Text style={{ color: colors.textPrimary, fontWeight: '600' }}>{order.quantity}</Text></Text>
+                  <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>Price <Text style={{ color: colors.textPrimary, fontWeight: '600' }}>{order.pendingPrice?.toFixed(5)}</Text></Text>
+                </View>
+                <View style={ordStyles.cardRow4}>
+                  <Text style={[ordStyles.cardSlTp, { color: colors.textMuted }]}>SL: {order.sl || order.stopLoss || '–'}  TP: {order.tp || order.takeProfit || '–'}</Text>
                   <TouchableOpacity
-                    style={[styles.cancelOrderBtn, cancellingOrderId === (order.id || order._id) && styles.btnDisabled]}
+                    style={[ordStyles.closeBtn, { backgroundColor: '#ef4444' }]}
                     onPress={() => cancelPendingOrder(order)}
                     disabled={cancellingOrderId === (order.id || order._id)}
                   >
-                    <Ionicons name="close-circle" size={20} color={colors.accent} />
-                    <Text style={[styles.cancelOrderText, { color: colors.accent }]}>Cancel</Text>
+                    <Text style={ordStyles.closeBtnText}>CANCEL</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -3416,84 +3501,65 @@ const TradeTab = () => {
 
         {tradeTab === 'history' && (
           <>
-            {/* History Filter Buttons */}
-            <View style={[styles.historyFilters, { backgroundColor: colors.bgSecondary, borderBottomColor: colors.border }]}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.historyFiltersContent}>
-                {[
-                  { key: 'all', label: 'All' },
-                  { key: 'today', label: 'Today' },
-                  { key: 'week', label: 'This Week' },
-                  { key: 'month', label: 'This Month' },
-                  { key: 'year', label: 'This Year' }
-                ].map(filter => (
+            <View style={[ordStyles.historyFiltersRow, { borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : colors.border }]}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 12, gap: 8 }}>
+                {['all', 'today', 'week', 'month', 'year'].map(f => (
                   <TouchableOpacity
-                    key={filter.key}
-                    style={[
-                      styles.historyFilterBtn,
-                      { backgroundColor: historyFilter === filter.key ? '#22c55e' : colors.bgCard }
-                    ]}
-                    onPress={() => setHistoryFilter(filter.key)}
+                    key={f}
+                    style={[ordStyles.filterChip, { backgroundColor: historyFilter === f ? colors.primary : (isDark ? 'rgba(255,255,255,0.06)' : colors.bgSecondary) }]}
+                    onPress={() => setHistoryFilter(f)}
                   >
-                    <Text style={[
-                      styles.historyFilterText,
-                      { color: historyFilter === filter.key ? '#000' : colors.textMuted }
-                    ]}>
-                      {filter.label}
+                    <Text style={{ color: historyFilter === f ? '#fff' : colors.textMuted, fontSize: 12, fontWeight: '600' }}>
+                      {f === 'all' ? 'All' : f === 'today' ? 'Today' : f === 'week' ? 'Week' : f === 'month' ? 'Month' : 'Year'}
                     </Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
-            </View>
-            
-            {/* History Summary */}
-            <View style={[styles.historySummary, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}>
-              <Text style={[styles.historySummaryText, { color: colors.textMuted }]}>
-                {getFilteredHistory().length} trades
-              </Text>
-              <Text style={[styles.historySummaryText, { color: colors.textMuted }]}>
-                P&L: <Text style={{ color: getHistoryTotalPnl() >= 0 ? '#22c55e' : '#ef4444', fontWeight: '600' }}>
-                  ${getHistoryTotalPnl().toFixed(2)}
-                </Text>
-              </Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8 }}>
+                <Text style={{ color: colors.textMuted, fontSize: 12 }}>{getFilteredHistory().length} trades</Text>
+                <Text style={{ color: getHistoryTotalPnl() >= 0 ? '#22c55e' : '#ef4444', fontSize: 12, fontWeight: '700' }}>P&L: ${getHistoryTotalPnl().toFixed(2)}</Text>
+              </View>
             </View>
 
             {getFilteredHistory().length === 0 ? (
-              <View style={styles.emptyState}>
+              <View style={ordStyles.emptyWrap}>
                 <Ionicons name="document-text-outline" size={48} color={colors.textMuted} />
-                <Text style={[styles.emptyText, { color: colors.textMuted }]}>No trade history</Text>
+                <Text style={[ordStyles.emptyText, { color: colors.textMuted }]}>No trade history</Text>
               </View>
             ) : (
               getFilteredHistory().map((trade) => (
                 <TouchableOpacity
                   key={trade._id || trade.id}
-                  style={[styles.historyItem, { backgroundColor: colors.bgCard, borderBottomColor: colors.border }]}
+                  style={[ordStyles.tradeCard, { backgroundColor: colors.bgCard, borderColor: isDark ? 'rgba(255,255,255,0.06)' : colors.border }]}
                   onPress={() => { setHistoryDetailTrade(trade); setShowHistoryDetails(true); }}
                 >
-                  <View style={styles.historyHeader}>
-                    <View style={styles.historyLeft}>
-                      <Text style={[styles.historySymbol, { color: colors.textPrimary }]}>{trade.symbol}</Text>
-                      <Text style={[styles.historySide, { color: trade.side === 'BUY' ? '#22c55e' : '#ef4444' }]}>{trade.side}</Text>
+                  <View style={ordStyles.cardRow1}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={[ordStyles.cardSymbol, { color: colors.textPrimary }]}>{trade.symbol}</Text>
+                      <Text style={{ color: trade.side === 'BUY' ? '#2196f3' : '#ef4444', fontSize: 12, fontWeight: '700' }}>{trade.side}</Text>
                       {trade.closedBy === 'ADMIN' && (
-                        <View style={styles.adminBadge}>
-                          <Text style={styles.adminBadgeText}>Admin Close</Text>
+                        <View style={{ backgroundColor: '#1a73e820', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                          <Text style={{ color: '#1a73e8', fontSize: 10, fontWeight: '700' }}>Admin</Text>
                         </View>
                       )}
                     </View>
-                    <Text style={[styles.historyPnl, { color: (trade.realizedPnl || 0) >= 0 ? '#22c55e' : '#ef4444' }]}>
+                    <Text style={[ordStyles.cardPnl, { color: (trade.realizedPnl || 0) >= 0 ? '#22c55e' : '#ef4444' }]}>
                       {(trade.realizedPnl || 0) >= 0 ? '+' : ''}${(trade.realizedPnl || 0).toFixed(2)}
                     </Text>
                   </View>
-                  <View style={styles.historyDetails}>
-                    <Text style={[styles.historyDetail, { color: colors.textMuted }]}>{trade.quantity} lots</Text>
-                    <Text style={[styles.historyDetail, { color: colors.textMuted }]}>{new Date(trade.closedAt).toLocaleDateString()}</Text>
+                  <View style={ordStyles.cardRow2}>
+                    <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>{trade.quantity} lots</Text>
+                    <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>Open {trade.openPrice?.toFixed(5)}</Text>
+                    <Text style={[ordStyles.cardDetail, { color: colors.textMuted }]}>Close {trade.closePrice?.toFixed(5)}</Text>
                   </View>
+                  <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 4 }}>{trade.closedAt ? new Date(trade.closedAt).toLocaleString() : ''}</Text>
                 </TouchableOpacity>
               ))
             )}
           </>
         )}
+        <View style={{ height: 20 }} />
       </ScrollView>
-      </View>
 
       {/* SL/TP Modal */}
       <Modal visible={showSlTpModal} animationType="slide" transparent onRequestClose={() => setShowSlTpModal(false)}>
@@ -3529,7 +3595,7 @@ const TradeTab = () => {
                 returnKeyType="next"
                 autoCorrect={false}
                 autoCapitalize="none"
-                selectionColor="#5a189a"
+                selectionColor="#1a73e8"
                 editable={true}
               />
             </View>
@@ -3546,7 +3612,7 @@ const TradeTab = () => {
                 returnKeyType="done"
                 autoCorrect={false}
                 autoCapitalize="none"
-                selectionColor="#5a189a"
+                selectionColor="#1a73e8"
                 editable={true}
                 onSubmitEditing={updateSlTp}
               />
@@ -3574,6 +3640,100 @@ const TradeTab = () => {
             </View>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Partial Close Modal */}
+      <Modal visible={showPartialClose} animationType="slide" transparent onRequestClose={() => setShowPartialClose(false)}>
+        <View style={styles.slTpModalOverlay}>
+          <TouchableOpacity style={styles.slTpModalBackdrop} activeOpacity={1} onPress={() => setShowPartialClose(false)} />
+          <View style={[styles.slTpModalContent, { backgroundColor: colors.bgCard }]}>
+            <View style={[styles.slTpModalHandle, { backgroundColor: colors.border }]} />
+            <View style={styles.slTpModalHeader}>
+              <Text style={[styles.slTpModalTitle, { color: colors.textPrimary }]}>Close Position</Text>
+              <TouchableOpacity onPress={() => setShowPartialClose(false)}>
+                <Ionicons name="close" size={24} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            {partialCloseTrade && (
+              <View style={{ paddingHorizontal: 4 }}>
+                {/* Trade Info */}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, padding: 12, borderRadius: 10, backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#f5f5f5' }}>
+                  <View>
+                    <Text style={{ color: colors.textPrimary, fontSize: 16, fontWeight: '700' }}>{partialCloseTrade.symbol}</Text>
+                    <Text style={{ color: partialCloseTrade.side === 'BUY' ? '#2196f3' : '#ef4444', fontSize: 12, fontWeight: '600', marginTop: 2 }}>{partialCloseTrade.side} · {partialCloseTrade.quantity} lots</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={{ color: colors.textMuted, fontSize: 11 }}>Floating P&L</Text>
+                    <Text style={{ color: calculatePnl(partialCloseTrade) >= 0 ? '#22c55e' : '#ef4444', fontSize: 16, fontWeight: '700' }}>
+                      {calculatePnl(partialCloseTrade) >= 0 ? '+' : ''}${calculatePnl(partialCloseTrade).toFixed(2)}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Percentage Buttons */}
+                <Text style={{ color: colors.textMuted, fontSize: 12, fontWeight: '600', marginBottom: 10, letterSpacing: 0.5 }}>CLOSE AMOUNT</Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
+                  {[25, 50, 75, 100].map(pct => {
+                    const isActive = partialPercent === pct;
+                    const totalLots = partialCloseTrade.quantity || 0;
+                    const lotsForPct = parseFloat((totalLots * pct / 100).toFixed(2));
+                    return (
+                      <TouchableOpacity
+                        key={pct}
+                        onPress={() => setPartialPercent(pct)}
+                        style={{
+                          flex: 1, paddingVertical: 14, borderRadius: 10, alignItems: 'center',
+                          backgroundColor: isActive ? (pct === 100 ? '#ef4444' : colors.primary) : (isDark ? 'rgba(255,255,255,0.06)' : '#f0f0f0'),
+                          borderWidth: 1,
+                          borderColor: isActive ? (pct === 100 ? '#ef4444' : colors.primary) : (isDark ? 'rgba(255,255,255,0.1)' : '#e0e0e0'),
+                        }}
+                      >
+                        <Text style={{ color: isActive ? '#fff' : colors.textPrimary, fontSize: 15, fontWeight: '700' }}>{pct}%</Text>
+                        <Text style={{ color: isActive ? 'rgba(255,255,255,0.7)' : colors.textMuted, fontSize: 10, marginTop: 2 }}>{lotsForPct} lots</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* Summary */}
+                <View style={{ padding: 12, borderRadius: 10, backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : '#f5f5f5', marginBottom: 20 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <Text style={{ color: colors.textMuted, fontSize: 12 }}>Total Volume</Text>
+                    <Text style={{ color: colors.textPrimary, fontSize: 12, fontWeight: '600' }}>{partialCloseTrade.quantity} lots</Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <Text style={{ color: colors.textMuted, fontSize: 12 }}>Close Volume</Text>
+                    <Text style={{ color: partialPercent === 100 ? '#ef4444' : colors.primary, fontSize: 12, fontWeight: '700' }}>
+                      {parseFloat(((partialCloseTrade.quantity || 0) * partialPercent / 100).toFixed(2))} lots
+                    </Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                    <Text style={{ color: colors.textMuted, fontSize: 12 }}>Remaining</Text>
+                    <Text style={{ color: colors.textPrimary, fontSize: 12, fontWeight: '600' }}>
+                      {parseFloat(((partialCloseTrade.quantity || 0) * (100 - partialPercent) / 100).toFixed(2))} lots
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Confirm Button */}
+                <TouchableOpacity
+                  onPress={confirmPartialClose}
+                  disabled={closingTradeId != null}
+                  style={{
+                    paddingVertical: 16, borderRadius: 12, alignItems: 'center',
+                    backgroundColor: partialPercent === 100 ? '#ef4444' : colors.primary,
+                    opacity: closingTradeId ? 0.5 : 1,
+                  }}
+                >
+                  <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>
+                    {closingTradeId ? 'Closing...' : partialPercent === 100 ? 'CLOSE FULL POSITION' : `CLOSE ${partialPercent}% (${parseFloat(((partialCloseTrade.quantity || 0) * partialPercent / 100).toFixed(2))} lots)`}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
       </Modal>
 
       {/* Trade Details Modal */}
@@ -3644,7 +3804,7 @@ const TradeTab = () => {
                   <Text style={[styles.detailSectionTitle, { color: colors.primary }]}>Stop Loss / Take Profit</Text>
                   <View style={[styles.detailRow, { borderBottomColor: colors.border }]}>
                     <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Stop Loss</Text>
-                    <Text style={[styles.detailValue, { color: (detailTrade.sl || detailTrade.stopLoss) ? '#5a189a' : colors.textMuted }]}>
+                    <Text style={[styles.detailValue, { color: (detailTrade.sl || detailTrade.stopLoss) ? '#1a73e8' : colors.textMuted }]}>
                       {detailTrade.sl || detailTrade.stopLoss || 'Not Set'}
                     </Text>
                   </View>
@@ -3703,7 +3863,7 @@ const TradeTab = () => {
                     style={styles.detailEditBtn} 
                     onPress={() => { setShowTradeDetails(false); openSlTpModal(detailTrade); }}
                   >
-                    <Ionicons name="pencil" size={18} color="#5a189a" />
+                    <Ionicons name="pencil" size={18} color="#1a73e8" />
                     <Text style={styles.detailEditText}>Edit SL/TP</Text>
                   </TouchableOpacity>
                   <TouchableOpacity 
@@ -3724,8 +3884,8 @@ const TradeTab = () => {
       <Modal visible={showCloseAllModal} animationType="fade" transparent onRequestClose={() => setShowCloseAllModal(false)}>
         <View style={styles.confirmModalOverlay}>
           <View style={styles.confirmModalContent}>
-            <View style={[styles.confirmModalIcon, { backgroundColor: closeAllType === 'profit' ? '#5a189a20' : closeAllType === 'loss' ? '#5a189a20' : '#5a189a20' }]}>
-              <Ionicons name={closeAllType === 'profit' ? 'trending-up' : closeAllType === 'loss' ? 'trending-down' : 'close-circle'} size={32} color={closeAllType === 'profit' ? '#5a189a' : closeAllType === 'loss' ? '#5a189a' : '#5a189a'} />
+            <View style={[styles.confirmModalIcon, { backgroundColor: closeAllType === 'profit' ? '#1a73e820' : closeAllType === 'loss' ? '#1a73e820' : '#1a73e820' }]}>
+              <Ionicons name={closeAllType === 'profit' ? 'trending-up' : closeAllType === 'loss' ? 'trending-down' : 'close-circle'} size={32} color={closeAllType === 'profit' ? '#1a73e8' : closeAllType === 'loss' ? '#1a73e8' : '#1a73e8'} />
             </View>
             <Text style={styles.confirmModalTitle}>
               {closeAllType === 'all' && 'Close All Trades?'}
@@ -3742,7 +3902,7 @@ const TradeTab = () => {
                 <Text style={styles.confirmCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity 
-                style={[styles.confirmCloseBtn, { backgroundColor: closeAllType === 'profit' ? '#5a189a' : closeAllType === 'loss' ? '#5a189a' : '#5a189a' }, isClosingAll && styles.btnDisabled]} 
+                style={[styles.confirmCloseBtn, { backgroundColor: closeAllType === 'profit' ? '#1a73e8' : closeAllType === 'loss' ? '#1a73e8' : '#1a73e8' }, isClosingAll && styles.btnDisabled]} 
                 onPress={confirmCloseAll}
                 disabled={isClosingAll}
               >
@@ -3836,7 +3996,7 @@ const TradeTab = () => {
                   <Text style={[styles.detailSectionTitle, { color: colors.primary }]}>Stop Loss / Take Profit</Text>
                   <View style={[styles.detailRow, { borderBottomColor: colors.border }]}>
                     <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Stop Loss</Text>
-                    <Text style={[styles.detailValue, { color: (historyDetailTrade.sl || historyDetailTrade.stopLoss) ? '#5a189a' : colors.textMuted }]}>
+                    <Text style={[styles.detailValue, { color: (historyDetailTrade.sl || historyDetailTrade.stopLoss) ? '#1a73e8' : colors.textMuted }]}>
                       {historyDetailTrade.sl || historyDetailTrade.stopLoss || 'Not Set'}
                     </Text>
                   </View>
@@ -3931,7 +4091,7 @@ const HistoryTab = () => {
       style={styles.container}
       data={ctx.tradeHistory}
       keyExtractor={item => item._id}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#5a189a" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1a73e8" />}
       ListEmptyComponent={
         <View style={styles.emptyState}>
           <Ionicons name="document-text-outline" size={48} color="#666" />
@@ -4731,7 +4891,7 @@ const ThemedTabNavigator = () => {
           backgroundColor: colors.tabBarBg,
           borderTopColor: colors.border,
           borderTopWidth: StyleSheet.hairlineWidth,
-          height: 58 + bottomPadding,
+          height: 64 + bottomPadding,
           paddingBottom: bottomPadding,
           paddingTop: 6,
           elevation: 0,
@@ -4740,13 +4900,27 @@ const ThemedTabNavigator = () => {
         tabBarInactiveTintColor: colors.textMuted,
         tabBarLabelStyle: { fontSize: 10, fontWeight: '600', marginBottom: 2 },
         tabBarIcon: ({ focused, color, size }) => {
-          let iconName;
-          if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
-          else if (route.name === 'Markets') iconName = focused ? 'stats-chart' : 'stats-chart-outline';
-          else if (route.name === 'Chart') iconName = focused ? 'analytics' : 'analytics-outline';
-          else if (route.name === 'Trade') iconName = focused ? 'trending-up' : 'trending-up-outline';
-          else if (route.name === 'More') iconName = focused ? 'menu' : 'menu-outline';
-          return <Ionicons name={iconName} size={size} color={color} />;
+          if (route.name === 'Home') {
+            return <Ionicons name={focused ? 'home' : 'home-outline'} size={24} color={color} />;
+          } else if (route.name === 'Market') {
+            return <MaterialCommunityIcons name="finance" size={24} color={color} />;
+          } else if (route.name === 'Chart') {
+            return (
+              <View style={{
+                width: 52, height: 52, borderRadius: 16, backgroundColor: isDark ? '#1e1e1e' : '#f0f0f0',
+                justifyContent: 'center', alignItems: 'center', marginBottom: 20,
+                shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 6,
+                borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+              }}>
+                <MaterialCommunityIcons name="chart-line-variant" size={28} color={color} />
+              </View>
+            );
+          } else if (route.name === 'Orders') {
+            return <MaterialCommunityIcons name="clipboard-text-outline" size={23} color={color} />;
+          } else if (route.name === 'More') {
+            return <Ionicons name="ellipsis-horizontal" size={24} color={color} />;
+          }
+          return <Ionicons name="help" size={size} color={color} />;
         },
       })}
       screenListeners={({ route }) => ({
@@ -4756,9 +4930,9 @@ const ThemedTabNavigator = () => {
       })}
     >
       <Tab.Screen name="Home" component={HomeTab} />
-      <Tab.Screen name="Markets" component={QuotesTab} />
+      <Tab.Screen name="Market" component={QuotesTab} />
       <Tab.Screen name="Chart" component={ChartTab} />
-      <Tab.Screen name="Trade" component={TradeTab} />
+      <Tab.Screen name="Orders" component={TradeTab} />
       <Tab.Screen name="More" component={MoreTab} />
     </Tab.Navigator>
   );
@@ -4797,7 +4971,7 @@ const styles = StyleSheet.create({
   
   accountCard: { margin: 16, padding: 16, backgroundColor: '#141414', borderRadius: 16, borderWidth: 1, borderColor: '#1e1e1e' },
   accountCardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  accountIconContainer: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#5a189a20', justifyContent: 'center', alignItems: 'center' },
+  accountIconContainer: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#1a73e820', justifyContent: 'center', alignItems: 'center' },
   accountInfo: { flex: 1, marginLeft: 12 },
   accountId: { color: '#fff', fontSize: 16, fontWeight: '600' },
   accountType: { color: '#666', fontSize: 12, marginTop: 2 },
@@ -4877,7 +5051,7 @@ const styles = StyleSheet.create({
   
   // Deposit/Withdraw Buttons
   actionButtons: { flexDirection: 'row', gap: 8, marginHorizontal: 16, marginTop: 12 },
-  depositBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, backgroundColor: '#5a189a', borderRadius: 12 },
+  depositBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, backgroundColor: '#1a73e8', borderRadius: 12 },
   depositBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   withdrawBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, backgroundColor: '#0f0f0f', borderRadius: 12, borderWidth: 1, borderColor: '#2a2a2a' },
   withdrawBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
@@ -4912,7 +5086,7 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sectionTitle: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  seeAllText: { color: '#5a189a', fontSize: 13, fontWeight: '500' },
+  seeAllText: { color: '#1a73e8', fontSize: 13, fontWeight: '500' },
   
   // Copy Trade Masters Section
   mastersSection: { marginHorizontal: 16, marginTop: 16 },
@@ -4932,11 +5106,11 @@ const styles = StyleSheet.create({
     width: 48, 
     height: 48, 
     borderRadius: 24, 
-    backgroundColor: '#5a189a30', 
+    backgroundColor: '#1a73e830', 
     justifyContent: 'center', 
     alignItems: 'center' 
   },
-  masterAvatarText: { color: '#5a189a', fontSize: 18, fontWeight: 'bold' },
+  masterAvatarText: { color: '#1a73e8', fontSize: 18, fontWeight: 'bold' },
   followingBadgeSmall: { 
     position: 'absolute', 
     bottom: -2, 
@@ -4966,7 +5140,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8, 
     borderRadius: 8 
   },
-  marketTabActive: { backgroundColor: '#5a189a' },
+  marketTabActive: { backgroundColor: '#1a73e8' },
   marketTabText: { color: '#888', fontSize: 12, fontWeight: '600' },
   marketTabTextActive: { color: '#fff' },
   marketList: {},
@@ -5186,12 +5360,12 @@ const styles = StyleSheet.create({
     width: 80, 
     height: 80, 
     borderRadius: 40, 
-    backgroundColor: '#5a189a30', 
+    backgroundColor: '#1a73e830', 
     justifyContent: 'center', 
     alignItems: 'center',
     marginBottom: 12
   },
-  masterProfileAvatarText: { color: '#5a189a', fontSize: 32, fontWeight: 'bold' },
+  masterProfileAvatarText: { color: '#1a73e8', fontSize: 32, fontWeight: 'bold' },
   masterProfileName: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
   masterProfileBio: { color: '#888', fontSize: 13, textAlign: 'center', marginTop: 8, paddingHorizontal: 20 },
   followingBadgeLarge: { 
@@ -5221,7 +5395,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     justifyContent: 'center', 
     gap: 8, 
-    backgroundColor: '#5a189a', 
+    backgroundColor: '#1a73e8', 
     paddingVertical: 14, 
     borderRadius: 12 
   },
@@ -5244,7 +5418,7 @@ const styles = StyleSheet.create({
     marginTop: 16, 
     paddingVertical: 12 
   },
-  viewFullProfileText: { color: '#5a189a', fontSize: 14, fontWeight: '600' },
+  viewFullProfileText: { color: '#1a73e8', fontSize: 14, fontWeight: '600' },
   
   // MarketWatch News Section
   marketWatchSection: { marginHorizontal: 16, marginTop: 16 },
@@ -5266,8 +5440,8 @@ const styles = StyleSheet.create({
   newsCardContentVertical: { flex: 1, padding: 14, justifyContent: 'space-between' },
   newsCardContentFull: { padding: 14 },
   newsCardMeta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  newsCategoryBadge: { backgroundColor: '#5a189a20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
-  newsCategoryText: { color: '#5a189a', fontSize: 11, fontWeight: '600' },
+  newsCategoryBadge: { backgroundColor: '#1a73e820', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
+  newsCategoryText: { color: '#1a73e8', fontSize: 11, fontWeight: '600' },
   newsTime: { color: '#666', fontSize: 11 },
   newsCardTitle: { color: '#fff', fontSize: 14, fontWeight: '600', lineHeight: 20, marginBottom: 6 },
   newsCardDesc: { color: '#888', fontSize: 12, lineHeight: 17, marginBottom: 10 },
@@ -5288,12 +5462,12 @@ const styles = StyleSheet.create({
   positionsCard: { margin: 16, padding: 16, backgroundColor: '#1E1E1E', borderRadius: 16, borderWidth: 1, borderColor: '#333333' },
   positionsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   positionsTitle: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  positionsCount: { color: '#5a189a', fontSize: 14 },
+  positionsCount: { color: '#1a73e8', fontSize: 14 },
   noPositionsText: { color: '#666', fontSize: 14, textAlign: 'center', paddingVertical: 16 },
   positionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 12, backgroundColor: '#1E1E1E', borderRadius: 12, marginBottom: 8 },
   positionSide: { fontSize: 12, marginTop: 2 },
   positionPnlValue: { fontSize: 16, fontWeight: '600' },
-  viewAllText: { color: '#5a189a', fontSize: 14, textAlign: 'center', paddingTop: 8 },
+  viewAllText: { color: '#1a73e8', fontSize: 14, textAlign: 'center', paddingTop: 8 },
   
   // News Section (Home Tab)
   newsSection: { margin: 16, marginTop: 8 },
@@ -5302,11 +5476,11 @@ const styles = StyleSheet.create({
   newsTab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: 10 },
   newsTabActive: { backgroundColor: '#1E1E1E' },
   newsTabText: { color: '#666', fontSize: 12, fontWeight: '500' },
-  newsTabTextActive: { color: '#5a189a' },
+  newsTabTextActive: { color: '#1a73e8' },
   newsContent: {},
   newsItem: { backgroundColor: '#1E1E1E', borderRadius: 12, padding: 16, marginBottom: 10, borderWidth: 1, borderColor: '#333333' },
-  newsCategory: { backgroundColor: '#5a189a20', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, alignSelf: 'flex-start', marginBottom: 8 },
-  newsCategoryText: { color: '#5a189a', fontSize: 11, fontWeight: '600' },
+  newsCategory: { backgroundColor: '#1a73e820', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, alignSelf: 'flex-start', marginBottom: 8 },
+  newsCategoryText: { color: '#1a73e8', fontSize: 11, fontWeight: '600' },
   newsTitle: { color: '#fff', fontSize: 14, fontWeight: '500', lineHeight: 20, marginBottom: 8 },
   newsMeta: { flexDirection: 'row', justifyContent: 'space-between' },
   newsSource: { color: '#888', fontSize: 12 },
@@ -5316,8 +5490,8 @@ const styles = StyleSheet.create({
   calendarHeaderText: { color: '#666', fontSize: 11, fontWeight: '600', width: 50, textAlign: 'center' },
   calendarRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#333333' },
   calendarTime: { color: '#fff', fontSize: 12, fontWeight: '500', width: 50, textAlign: 'center' },
-  currencyBadge: { backgroundColor: '#5a189a20', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, width: 50, alignItems: 'center' },
-  currencyText: { color: '#5a189a', fontSize: 11, fontWeight: '600' },
+  currencyBadge: { backgroundColor: '#1a73e820', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, width: 50, alignItems: 'center' },
+  currencyText: { color: '#1a73e8', fontSize: 11, fontWeight: '600' },
   eventName: { color: '#fff', fontSize: 13, fontWeight: '500' },
   eventForecast: { color: '#666', fontSize: 10, marginTop: 2 },
   impactDot: { width: 10, height: 10, borderRadius: 5 },
@@ -5385,7 +5559,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   marketTabBtnActive: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
   },
   marketTabText: {
     color: '#666',
@@ -5466,7 +5640,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#333333',
   },
-  categoryBtnActive: { backgroundColor: '#5a189a' },
+  categoryBtnActive: { backgroundColor: '#1a73e8' },
   categoryText: { color: '#666', fontSize: 12, fontWeight: '500' },
   categoryTextActive: { color: '#000', fontWeight: '600' },
   
@@ -5483,11 +5657,11 @@ const styles = StyleSheet.create({
   instrumentSymbol: { color: '#fff', fontSize: 14, fontWeight: '600' },
   instrumentName: { color: '#666', fontSize: 10, marginTop: 2 },
   instrumentPriceCol: { width: 60, alignItems: 'center' },
-  bidPrice: { color: '#5a189a', fontSize: 13, fontWeight: '500' },
+  bidPrice: { color: '#1a73e8', fontSize: 13, fontWeight: '500' },
   askPrice: { color: '#ef4444', fontSize: 13, fontWeight: '500' },
   priceLabel: { color: '#666', fontSize: 9, marginTop: 1 },
   spreadBadgeCol: { paddingHorizontal: 6, paddingVertical: 4, borderRadius: 4, marginHorizontal: 4, minWidth: 32, alignItems: 'center', borderWidth: 1 },
-  spreadBadgeText: { color: '#5a189a', fontSize: 11, fontWeight: '600' },
+  spreadBadgeText: { color: '#1a73e8', fontSize: 11, fontWeight: '600' },
   chartIconBtn: { 
     width: 32, 
     height: 32, 
@@ -5526,7 +5700,7 @@ const styles = StyleSheet.create({
   orderCloseBtn: { padding: 6 },
   leverageRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 10 },
   leverageLabel: { color: '#888', fontSize: 12 },
-  leverageValue: { color: '#5a189a', fontSize: 14, fontWeight: 'bold' },
+  leverageValue: { color: '#1a73e8', fontSize: 14, fontWeight: 'bold' },
   quickTradeRow: { flexDirection: 'row', gap: 8, marginBottom: 6 },
   quickSellBtn: { flex: 1, backgroundColor: '#ef4444', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
   quickBuyBtn: { flex: 1, backgroundColor: '#22c55e', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
@@ -5539,19 +5713,19 @@ const styles = StyleSheet.create({
   slMandatoryText: { color: '#f59e0b', fontSize: 12, flex: 1 },
   orderTypeRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   orderTypeBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
-  orderTypeBtnActive: { backgroundColor: '#5a189a' },
+  orderTypeBtnActive: { backgroundColor: '#1a73e8' },
   orderTypeBtnText: { fontSize: 13, fontWeight: '600' },
   orderTypeBtnTextActive: { color: '#fff' },
   pendingTypeRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   pendingTypeBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1 },
-  pendingTypeBtnActive: { borderColor: '#5a189a' },
+  pendingTypeBtnActive: { borderColor: '#1a73e8' },
   pendingTypeText: { color: '#666', fontSize: 12 },
-  pendingTypeTextActive: { color: '#5a189a' },
+  pendingTypeTextActive: { color: '#1a73e8' },
   inputSection: { marginBottom: 10 },
   inputLabel: { color: '#888', fontSize: 11, marginBottom: 4 },
   priceInput: { backgroundColor: '#1E1E1E', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, color: '#fff', fontSize: 15 },
   volumeControlRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  volumeControlBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center', backgroundColor: '#5a189a', borderRadius: 8 },
+  volumeControlBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1a73e8', borderRadius: 8 },
   volumeInputField: { flex: 1, backgroundColor: '#1E1E1E', borderRadius: 8, paddingVertical: 10, textAlign: 'center', color: '#fff', fontSize: 15 },
   slTpRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
   slTpCol: { flex: 1 },
@@ -5561,14 +5735,14 @@ const styles = StyleSheet.create({
   finalBuyBtn: { flex: 1, backgroundColor: '#22c55e', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   finalBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   spreadBadge: { backgroundColor: '#1E1E1E', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginHorizontal: 8, borderWidth: 1, borderColor: '#333333' },
-  spreadText: { color: '#5a189a', fontSize: 10 },
+  spreadText: { color: '#1a73e8', fontSize: 10 },
   
   // Trade
   priceBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, backgroundColor: '#1E1E1E' },
   currentSymbol: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   currentName: { color: '#666', fontSize: 12 },
   priceDisplay: { flexDirection: 'row', gap: 16 },
-  bidPriceMain: { color: '#5a189a', fontSize: 16, fontWeight: '600' },
+  bidPriceMain: { color: '#1a73e8', fontSize: 16, fontWeight: '600' },
   askPriceMain: { color: '#ef4444', fontSize: 16, fontWeight: '600' },
   
   // Trade tab — dashboard (web-style)
@@ -5620,14 +5794,14 @@ const styles = StyleSheet.create({
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#333333' },
   summaryLabel: { color: '#666', fontSize: 14 },
   summaryValue: { color: '#fff', fontSize: 14 },
-  pendingStatus: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
+  pendingStatus: { color: '#1a73e8', fontSize: 12, fontWeight: '600' },
   historySide: { fontSize: 12, marginLeft: 8 },
   
   tradeTabs: { flexDirection: 'row', backgroundColor: '#1E1E1E', borderBottomWidth: 1, borderBottomColor: '#333333' },
   tradeTabBtn: { flex: 1, paddingVertical: 12, alignItems: 'center' },
-  tradeTabBtnActive: { borderBottomWidth: 2, borderBottomColor: '#5a189a' },
+  tradeTabBtnActive: { borderBottomWidth: 2, borderBottomColor: '#1a73e8' },
   tradeTabText: { color: '#666', fontSize: 14 },
-  tradeTabTextActive: { color: '#5a189a', fontWeight: '600' },
+  tradeTabTextActive: { color: '#1a73e8', fontWeight: '600' },
   
   tradesList: { flex: 1 },
   positionItem: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#333333' },
@@ -5640,13 +5814,13 @@ const styles = StyleSheet.create({
   positionDetail: { color: '#666', fontSize: 12, marginTop: 4 },
   slTpText: { color: '#888', fontSize: 11, marginTop: 2 },
   positionActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 8 },
-  editBtn: { padding: 10, backgroundColor: '#5a189a20', borderRadius: 10 },
-  closeTradeBtn: { padding: 10, backgroundColor: '#5a189a20', borderRadius: 10 },
+  editBtn: { padding: 10, backgroundColor: '#1a73e820', borderRadius: 10 },
+  closeTradeBtn: { padding: 10, backgroundColor: '#1a73e820', borderRadius: 10 },
   positionPnlCol: { alignItems: 'flex-end' },
   positionPnl: { fontSize: 15, fontWeight: '600' },
   currentPriceText: { color: '#666', fontSize: 12, marginTop: 2 },
-  closeBtn: { backgroundColor: '#5a189a20', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 6 },
-  closeBtnText: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
+  closeBtn: { backgroundColor: '#1a73e820', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 6 },
+  closeBtnText: { color: '#1a73e8', fontSize: 12, fontWeight: '600' },
   
   // SL/TP Modal
   slTpModalOverlay: { flex: 1, justifyContent: 'flex-end' },
@@ -5663,53 +5837,53 @@ const styles = StyleSheet.create({
   slTpButtonRow: { flexDirection: 'row', gap: 12, marginTop: 8 },
   slTpClearBtn: { flex: 1, backgroundColor: '#1E1E1E', padding: 16, borderRadius: 12, alignItems: 'center' },
   slTpClearBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  slTpSaveBtn: { flex: 2, backgroundColor: '#5a189a', padding: 16, borderRadius: 12, alignItems: 'center' },
+  slTpSaveBtn: { flex: 2, backgroundColor: '#1a73e8', padding: 16, borderRadius: 12, alignItems: 'center' },
   slTpSaveBtnText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   
   // Trade Details Modal - colors applied inline with theme
   tradeDetailsContent: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 40, maxHeight: '85%' },
   tradeDetailsScroll: { maxHeight: 500 },
   detailSection: { borderRadius: 12, padding: 16, marginBottom: 12 },
-  detailSectionTitle: { color: '#5a189a', fontSize: 14, fontWeight: 'bold', marginBottom: 12 },
+  detailSectionTitle: { color: '#1a73e8', fontSize: 14, fontWeight: 'bold', marginBottom: 12 },
   detailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#333333' },
   detailLabel: { color: '#888', fontSize: 14 },
   detailValue: { color: '#fff', fontSize: 14, fontWeight: '500' },
   detailActions: { flexDirection: 'row', gap: 12, marginTop: 8, marginBottom: 20 },
-  detailEditBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#5a189a20', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#5a189a' },
-  detailEditText: { color: '#5a189a', fontSize: 15, fontWeight: '600' },
-  detailCloseBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#5a189a', padding: 14, borderRadius: 12 },
+  detailEditBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#1a73e820', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#1a73e8' },
+  detailEditText: { color: '#1a73e8', fontSize: 15, fontWeight: '600' },
+  detailCloseBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#1a73e8', padding: 14, borderRadius: 12 },
   detailCloseText: { color: '#fff', fontSize: 15, fontWeight: '600' },
   
   // iOS-style Confirmation Modal
   confirmModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 40 },
   confirmModalContent: { backgroundColor: '#1E1E1E', borderRadius: 20, padding: 24, width: '100%', alignItems: 'center' },
-  confirmModalIcon: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#5a189a20', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  confirmModalIcon: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#1a73e820', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
   confirmModalTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 8 },
   confirmModalMessage: { color: '#888', fontSize: 15, textAlign: 'center', marginBottom: 24 },
   confirmModalButtons: { flexDirection: 'row', gap: 12, width: '100%' },
   confirmCancelBtn: { flex: 1, backgroundColor: '#1E1E1E', padding: 14, borderRadius: 12, alignItems: 'center' },
   confirmCancelText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  confirmCloseBtn: { flex: 1, backgroundColor: '#5a189a', padding: 14, borderRadius: 12, alignItems: 'center' },
+  confirmCloseBtn: { flex: 1, backgroundColor: '#1a73e8', padding: 14, borderRadius: 12, alignItems: 'center' },
   confirmCloseText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   
   // Close All Buttons - background applied inline with theme
   closeAllRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingVertical: 8 },
-  closeAllBtn: { flex: 1, backgroundColor: '#5a189a20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#5a189a' },
-  closeAllText: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
-  closeProfitBtn: { flex: 1, backgroundColor: '#5a189a20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#5a189a' },
-  closeProfitText: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
-  closeLossBtn: { flex: 1, backgroundColor: '#5a189a20', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#5a189a' },
-  closeLossText: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
+  closeAllBtn: { flex: 1, backgroundColor: '#1a73e820', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#1a73e8' },
+  closeAllText: { color: '#1a73e8', fontSize: 12, fontWeight: '600' },
+  closeProfitBtn: { flex: 1, backgroundColor: '#1a73e820', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#1a73e8' },
+  closeProfitText: { color: '#1a73e8', fontSize: 12, fontWeight: '600' },
+  closeLossBtn: { flex: 1, backgroundColor: '#1a73e820', paddingVertical: 8, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#1a73e8' },
+  closeLossText: { color: '#1a73e8', fontSize: 12, fontWeight: '600' },
   
   // Cancel Order Button
-  cancelOrderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#5a189a20', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#5a189a' },
-  cancelOrderText: { color: '#5a189a', fontSize: 12, fontWeight: '600' },
+  cancelOrderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#1a73e820', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#1a73e8' },
+  cancelOrderText: { color: '#1a73e8', fontSize: 12, fontWeight: '600' },
   
   // Swipe to Close
-  swipeCloseBtn: { backgroundColor: '#5a189a', justifyContent: 'center', alignItems: 'center', width: 80, height: '100%' },
+  swipeCloseBtn: { backgroundColor: '#1a73e8', justifyContent: 'center', alignItems: 'center', width: 80, height: '100%' },
   swipeCloseText: { color: '#fff', fontSize: 12, fontWeight: '600', marginTop: 4 },
   
-  tradeButton: { margin: 16, padding: 16, backgroundColor: '#5a189a', borderRadius: 12, alignItems: 'center' },
+  tradeButton: { margin: 16, padding: 16, backgroundColor: '#1a73e8', borderRadius: 12, alignItems: 'center' },
   tradeButtonText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
   
   // Order Panel
@@ -5750,8 +5924,8 @@ const styles = StyleSheet.create({
   historyItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#333333' },
   historyDetails: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
   historyDetail: { color: '#666', fontSize: 12 },
-  adminBadge: { backgroundColor: '#5a189a20', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
-  adminBadgeText: { color: '#5a189a', fontSize: 10 },
+  adminBadge: { backgroundColor: '#1a73e820', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
+  adminBadgeText: { color: '#1a73e8', fontSize: 10 },
   
   // History Filters
   historyFilters: { paddingVertical: 8, borderBottomWidth: 1 },
@@ -5770,7 +5944,7 @@ const styles = StyleSheet.create({
   moreMenuItemText: { flex: 1, color: '#fff', fontSize: 16 },
   themeToggleItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#333333' },
   themeToggle: { width: 50, height: 28, backgroundColor: '#1E1E1E', borderRadius: 14, justifyContent: 'center', paddingHorizontal: 2 },
-  themeToggleActive: { backgroundColor: '#5a189a' },
+  themeToggleActive: { backgroundColor: '#1a73e8' },
   themeToggleThumb: { width: 24, height: 24, backgroundColor: '#fff', borderRadius: 12 },
   themeToggleThumbActive: { marginLeft: 'auto' },
   
@@ -5779,9 +5953,9 @@ const styles = StyleSheet.create({
   chartTabsBar: { flexDirection: 'row', alignItems: 'center', paddingTop: 50, paddingLeft: 8, backgroundColor: '#1E1E1E', borderBottomWidth: 1, borderBottomColor: '#333333' },
   chartTabsScroll: { flexGrow: 0 },
   chartTab: { paddingHorizontal: 14, paddingVertical: 10, marginRight: 2, borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  chartTabActive: { borderBottomColor: '#5a189a' },
+  chartTabActive: { borderBottomColor: '#1a73e8' },
   chartTabText: { color: '#666', fontSize: 13, fontWeight: '500' },
-  chartTabTextActive: { color: '#5a189a' },
+  chartTabTextActive: { color: '#1a73e8' },
   addChartBtn: { paddingHorizontal: 12, paddingVertical: 10 },
   chartWrapper: { flex: 1, backgroundColor: '#1E1E1E', minHeight: 400 },
   sentimentSection: { backgroundColor: '#1E1E1E', paddingHorizontal: 16, paddingVertical: 12 },
@@ -5790,7 +5964,7 @@ const styles = StyleSheet.create({
   chartPriceBar: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#1E1E1E' },
   chartPriceItem: { alignItems: 'center' },
   chartPriceLabel: { color: '#666', fontSize: 11, marginBottom: 2 },
-  chartBidPrice: { color: '#5a189a', fontSize: 16, fontWeight: '600' },
+  chartBidPrice: { color: '#1a73e8', fontSize: 16, fontWeight: '600' },
   chartAskPrice: { color: '#ef4444', fontSize: 16, fontWeight: '600' },
   chartSpread: { color: '#fff', fontSize: 14 },
   chartOneClickContainer: { backgroundColor: '#1E1E1E', paddingBottom: 16 },
@@ -5868,7 +6042,7 @@ const styles = StyleSheet.create({
     height: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     borderRadius: 6,
     marginRight: 4,
   },
@@ -5877,7 +6051,7 @@ const styles = StyleSheet.create({
     height: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     borderRadius: 6,
     marginLeft: 4,
   },
@@ -5898,21 +6072,21 @@ const styles = StyleSheet.create({
   leverageModalContent: { backgroundColor: '#1E1E1E', borderRadius: 16, padding: 16, width: 200 },
   leverageModalTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center', marginBottom: 12 },
   leverageModalItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 8 },
-  leverageModalItemActive: { backgroundColor: '#5a189a20' },
+  leverageModalItemActive: { backgroundColor: '#1a73e820' },
   leverageModalItemText: { color: '#888', fontSize: 14, fontWeight: '600' },
-  leverageModalItemTextActive: { color: '#5a189a' },
+  leverageModalItemTextActive: { color: '#1a73e8' },
   
   // Leverage Selector
   leverageSelector: { flexDirection: 'row', gap: 6 },
   leverageOption: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#1E1E1E', borderRadius: 6, borderWidth: 1, borderColor: '#333333' },
-  leverageOptionActive: { backgroundColor: '#5a189a20', borderColor: '#5a189a' },
+  leverageOptionActive: { backgroundColor: '#1a73e820', borderColor: '#1a73e8' },
   leverageOptionText: { color: '#888', fontSize: 12, fontWeight: '600' },
-  leverageOptionTextActive: { color: '#5a189a' },
+  leverageOptionTextActive: { color: '#1a73e8' },
   
   // Account Selector - Below search bar
   accountSelector: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#1E1E1E', marginHorizontal: 12, marginTop: 0, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#333333' },
   accountSelectorLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  accountIcon: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#5a189a20', justifyContent: 'center', alignItems: 'center' },
+  accountIcon: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#1a73e820', justifyContent: 'center', alignItems: 'center' },
   accountSelectorLabel: { color: '#666', fontSize: 9 },
   accountSelectorValue: { color: '#fff', fontSize: 12, fontWeight: '600' },
   
@@ -5925,14 +6099,14 @@ const styles = StyleSheet.create({
   accountPickerList: { paddingHorizontal: 12, paddingBottom: 40 },
   accountPickerSectionTitle: { fontSize: 12, fontWeight: '600', paddingHorizontal: 4, paddingTop: 12, paddingBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 },
   accountPickerItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, marginVertical: 4, backgroundColor: '#1E1E1E', borderRadius: 12 },
-  accountPickerItemActive: { backgroundColor: '#5a189a15', borderWidth: 1, borderColor: '#5a189a' },
+  accountPickerItemActive: { backgroundColor: '#1a73e815', borderWidth: 1, borderColor: '#1a73e8' },
   accountPickerItemLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   accountPickerIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#1E1E1E', justifyContent: 'center', alignItems: 'center' },
-  accountPickerIconActive: { backgroundColor: '#5a189a20' },
+  accountPickerIconActive: { backgroundColor: '#1a73e820' },
   accountPickerNumber: { color: '#fff', fontSize: 15, fontWeight: '600' },
   accountPickerType: { color: '#666', fontSize: 12, marginTop: 2 },
   accountPickerItemRight: { alignItems: 'flex-end', gap: 4 },
-  accountPickerBalance: { color: '#5a189a', fontSize: 16, fontWeight: 'bold' },
+  accountPickerBalance: { color: '#1a73e8', fontSize: 16, fontWeight: 'bold' },
   
   // Quick SL Modal for Challenge Accounts
   quickSlModalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)' },
@@ -5949,6 +6123,235 @@ const styles = StyleSheet.create({
   quickSlCancelBtnText: { fontSize: 15, fontWeight: '600' },
   quickSlConfirmBtn: { flex: 1, paddingVertical: 14, borderRadius: 10, alignItems: 'center' },
   quickSlConfirmBtnText: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
+});
+
+// Orders Screen Styles - matching screenshot design
+const ordStyles = StyleSheet.create({
+  accountHeader: {
+    paddingTop: 50,
+    paddingHorizontal: 16,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+  },
+  accountHeaderTop: { marginBottom: 12 },
+  accountLabel: { fontSize: 11, fontWeight: '600', letterSpacing: 0.5, marginBottom: 4 },
+  accountRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  accountId: { fontSize: 16, fontWeight: '700' },
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 0,
+  },
+  statItem: {
+    width: '25%',
+    paddingVertical: 4,
+  },
+  statLabel: { fontSize: 10, fontWeight: '500', marginBottom: 1 },
+  statValue: { fontSize: 13, fontWeight: '700', fontFamily: 'monospace' },
+  tabsRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+  },
+  tabItem: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabTitle: { fontSize: 14, fontWeight: '500' },
+  tabCount: { fontSize: 12, marginTop: 1 },
+  toolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+  },
+  toolBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  toolBtnText: { fontSize: 13, fontWeight: '600' },
+  emptyWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+  },
+  emptyText: { fontSize: 14, marginTop: 12 },
+  tradeCard: {
+    marginHorizontal: 12,
+    marginTop: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 14,
+  },
+  cardRow1: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  cardSymbol: { fontSize: 16, fontWeight: '800' },
+  cardPnl: { fontSize: 16, fontWeight: '700' },
+  cardRow2: {
+    flexDirection: 'row',
+    gap: 16,
+    marginBottom: 6,
+  },
+  cardDetail: { fontSize: 12 },
+  cardRow4: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 6,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  cardSlTp: { fontSize: 12 },
+  closeBtn: {
+    backgroundColor: '#ef444420',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  closeBtnText: { color: '#ef4444', fontSize: 13, fontWeight: '700' },
+  historyFiltersRow: {
+    paddingTop: 10,
+    borderBottomWidth: 1,
+  },
+  filterChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+});
+
+// Market Screen Styles - matching screenshot design
+const mktStyles = StyleSheet.create({
+  accountHeader: {
+    paddingTop: 50,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+  },
+  accountHeaderContent: {},
+  accountLabel: { fontSize: 11, fontWeight: '600', letterSpacing: 0.5, marginBottom: 4 },
+  accountRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  accountId: { fontSize: 16, fontWeight: '700' },
+  liveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  centBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  centBadgeText: { fontSize: 12, fontWeight: '600' },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 8,
+    gap: 8,
+  },
+  searchBox: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  searchInput: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 14,
+    paddingVertical: 0,
+  },
+  goBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  goBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  categoryScroll: {
+    flexGrow: 0,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  categoryScrollContent: {
+    paddingHorizontal: 12,
+    gap: 0,
+  },
+  categoryTab: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  categoryTabText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  instrumentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+  },
+  instrLeft: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 8,
+  },
+  instrSymbolRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 3,
+  },
+  instrSymbol: {
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  instrCategory: {
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  instrRight: {
+    alignItems: 'flex-end',
+    marginRight: 12,
+  },
+  instrPrice: {
+    fontSize: 16,
+    fontWeight: '700',
+    fontFamily: 'monospace',
+  },
+  instrPip: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
+  },
 });
 
 export default MainTradingScreen;

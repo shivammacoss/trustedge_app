@@ -257,7 +257,7 @@ const ForgotPasswordScreen = ({ navigation }) => {
         {/* Icon */}
         <View style={styles.iconContainer}>
           <View style={styles.iconCircle}>
-            <Ionicons name="lock-open-outline" size={40} color="#5a189a" />
+            <Ionicons name="lock-open-outline" size={40} color="#1a73e8" />
           </View>
         </View>
 
@@ -345,7 +345,7 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: '#5a189a20',
+    backgroundColor: '#1a73e820',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -400,7 +400,7 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   button: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
@@ -424,7 +424,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   loginLink: {
-    color: '#5a189a',
+    color: '#1a73e8',
     fontSize: 15,
     fontWeight: '600',
   },

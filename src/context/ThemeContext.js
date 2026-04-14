@@ -2,15 +2,15 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { View, ActivityIndicator } from 'react-native';
 
-/** Dark — BG #121212, Card #1E1E1E, Purple #5a189a */
+/** Dark — BG #121212, Card #1E1E1E, Blue #1a73e8 */
 const darkTheme = {
   name: 'Dark',
   isDark: true,
   colors: {
-    primary: '#5a189a',
-    primaryHover: '#7b2cbf',
-    secondary: '#5a189a',
-    accent: '#5a189a',
+    primary: '#1a73e8',
+    primaryHover: '#1557b0',
+    secondary: '#1a73e8',
+    accent: '#1a73e8',
     bgPrimary: '#121212',
     bgSecondary: '#252525',
     bgCard: '#1E1E1E',
@@ -23,14 +23,14 @@ const darkTheme = {
     success: '#22C55E',
     error: '#EF4444',
     warning: '#F59E0B',
-    info: '#5a189a',
+    info: '#1a73e8',
     buyColor: '#22C55E',
     sellColor: '#EF4444',
     profitColor: '#22C55E',
     lossColor: '#EF4444',
     tabBarBg: '#121212',
     cardBg: '#1E1E1E',
-    purple: '#7b2cbf',
+    purple: '#4285f4',
     cyan: '#22D3EE',
     orange: '#F97316',
     pink: '#EC4899',
@@ -39,15 +39,15 @@ const darkTheme = {
   },
 };
 
-/** Light — BG #FFFFFF, Card #F8FAFC, Purple #5a189a */
+/** Light — BG #FFFFFF, Card #F8FAFC, Blue #1a73e8 */
 const lightTheme = {
   name: 'Light',
   isDark: false,
   colors: {
-    primary: '#5a189a',
-    primaryHover: '#7b2cbf',
-    secondary: '#5a189a',
-    accent: '#5a189a',
+    primary: '#1a73e8',
+    primaryHover: '#1557b0',
+    secondary: '#1a73e8',
+    accent: '#1a73e8',
     bgPrimary: '#FFFFFF',
     bgSecondary: '#F8FAFC',
     bgCard: '#F8FAFC',
@@ -60,7 +60,7 @@ const lightTheme = {
     success: '#22C55E',
     error: '#EF4444',
     warning: '#F59E0B',
-    info: '#5a189a',
+    info: '#1a73e8',
     buyColor: '#22C55E',
     sellColor: '#EF4444',
     profitColor: '#22C55E',
@@ -71,7 +71,7 @@ const lightTheme = {
 };
 
 const LOADING_BG = '#FFFFFF';
-const LOADING_ACCENT = '#5a189a';
+const LOADING_ACCENT = '#1a73e8';
 
 const ThemeContext = createContext({
   theme: lightTheme,

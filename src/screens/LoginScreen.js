@@ -29,6 +29,8 @@ const LoginScreen = ({ navigation }) => {
     email: '',
     password: '',
   });
+  const [loginAttempts, setLoginAttempts] = useState(0);
+  const [lockoutUntil, setLockoutUntil] = useState(0);
 
   // Check if user is already logged in
   useEffect(() => {
@@ -40,10 +42,34 @@ const LoginScreen = ({ navigation }) => {
       const userData = await SecureStore.getItemAsync('user');
       const token = await SecureStore.getItemAsync('token');
       if (userData && token) {
-        console.log('User already logged in, navigating to MainTrading');
-        navigation.replace('MainTrading');
-      } else {
-        console.log('No valid auth found, staying on Login');
+        // Check token expiry
+        const user = JSON.parse(userData);
+        if (user.expires_at) {
+          const expiresAt = new Date(user.expires_at).getTime();
+          if (Date.now() >= expiresAt) {
+            // Token expired — clear and stay on login
+            await SecureStore.deleteItemAsync('token');
+            await SecureStore.deleteItemAsync('user');
+            setCheckingAuth(false);
+            return;
+          }
+        }
+        // Verify token is still valid with server
+        try {
+          const res = await fetch(`${API_URL}/profile`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+          });
+          if (res.ok) {
+            navigation.replace('MainTrading');
+          } else {
+            // Server rejected token — clear stale auth
+            await SecureStore.deleteItemAsync('token');
+            await SecureStore.deleteItemAsync('user');
+          }
+        } catch {
+          // Network error — allow offline access with non-expired token
+          navigation.replace('MainTrading');
+        }
       }
     } catch (e) {
       console.error('Error checking auth:', e);
@@ -67,6 +93,13 @@ const LoginScreen = ({ navigation }) => {
       return;
     }
 
+    // Rate limiting: max 5 attempts, then 30s cooldown
+    if (Date.now() < lockoutUntil) {
+      const secs = Math.ceil((lockoutUntil - Date.now()) / 1000);
+      Alert.alert('Too Many Attempts', `Please wait ${secs} seconds before trying again.`);
+      return;
+    }
+
     setLoading(true);
     try {
       const controller = new AbortController();
@@ -82,12 +115,18 @@ const LoginScreen = ({ navigation }) => {
       clearTimeout(timeoutId);
 
       const data = await response.json();
-      console.log('Login response status:', response.status, data?.detail || '');
-
       if (!response.ok) {
+        const newAttempts = loginAttempts + 1;
+        setLoginAttempts(newAttempts);
+        if (newAttempts >= 5) {
+          setLockoutUntil(Date.now() + 30000);
+          setLoginAttempts(0);
+          throw new Error('Too many failed attempts. Please wait 30 seconds.');
+        }
         const errMsg = data.detail || data.message || `Login failed (${response.status})`;
         throw new Error(errMsg);
       }
+      setLoginAttempts(0);
 
       const token = data.access_token;
       if (!token) throw new Error('No access token received from server');
@@ -120,7 +159,7 @@ const LoginScreen = ({ navigation }) => {
   if (checkingAuth) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color="#5a189a" />
+        <ActivityIndicator size="large" color="#1a73e8" />
       </View>
     );
   }
@@ -143,7 +182,7 @@ const LoginScreen = ({ navigation }) => {
             style={styles.logoImage}
             resizeMode="contain"
           />
-          <Text style={styles.brandName}>TrustEdge</Text>
+          <Text style={styles.brandName}>TrustEdgeFX</Text>
         </View>
 
         {/* Tab Switcher */}
@@ -245,15 +284,14 @@ const styles = StyleSheet.create({
   logo: {
     width: 60,
     height: 60,
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
   },
   logoImage: {
-    width: 80,
-    height: 80,
-    borderRadius: 16,
+    width: 120,
+    height: 120,
   },
   logoText: {
     color: '#000',
@@ -280,7 +318,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   activeTab: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
   },
   tabText: {
     color: '#666',
@@ -330,12 +368,12 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   forgotText: {
-    color: '#5a189a',
+    color: '#1a73e8',
     fontSize: 14,
     fontWeight: '500',
   },
   button: {
-    backgroundColor: '#5a189a',
+    backgroundColor: '#1a73e8',
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
@@ -388,7 +426,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   signupLink: {
-    color: '#5a189a',
+    color: '#1a73e8',
     fontSize: 15,
     fontWeight: '600',
   },

@@ -28,10 +28,7 @@ class WebSocketService {
     this.isConnecting = true;
 
     try {
-      const token = await SecureStore.getItemAsync('token');
-      const wsUrl = token ? `${WS_URL}/ws/prices?token=${token}` : `${WS_URL}/ws/prices`;
-      
-      console.log('Connecting to price stream:', wsUrl);
+      const wsUrl = `${WS_URL}/ws/prices`;
       
       this.priceWs = new WebSocket(wsUrl);
 
@@ -80,7 +77,6 @@ class WebSocketService {
       }
 
       const wsUrl = `${WS_URL}/ws/trades/${accountId}?token=${token}`;
-      console.log('Connecting to trade stream:', wsUrl);
       
       this.tradeWs = new WebSocket(wsUrl);
 
