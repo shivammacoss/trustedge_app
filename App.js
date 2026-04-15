@@ -1,10 +1,11 @@
-import React, { Component } from 'react';
+import React, { Component, useEffect } from 'react';
 import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { View, Text, StyleSheet, LogBox } from 'react-native';
+import { View, Text, StyleSheet, LogBox, AppState } from 'react-native';
+import * as Updates from 'expo-updates';
 import { AuthProvider } from './src/context/AuthContext';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { I18nProvider } from './src/i18n';
@@ -80,7 +81,28 @@ class ErrorBoundary extends Component {
 
 const AppContent = () => {
   const { colors, isDark } = useTheme();
-  
+
+  // Force-check OTA updates on launch AND when app returns to foreground.
+  // If an update is available, download + reload immediately so user sees latest.
+  useEffect(() => {
+    const checkAndApply = async () => {
+      try {
+        if (__DEV__) return;
+        const res = await Updates.checkForUpdateAsync();
+        if (res?.isAvailable) {
+          await Updates.fetchUpdateAsync();
+          await Updates.reloadAsync();
+        }
+      } catch (_) {}
+    };
+
+    checkAndApply();
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') checkAndApply();
+    });
+    return () => sub.remove();
+  }, []);
+
   return (
     <>
       <StatusBar style={isDark ? "light" : "dark"} />
