@@ -1125,6 +1125,21 @@ const HomeTab = ({ navigation }) => {
   const [walletBal, setWalletBal] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
 
+  // Top-bar stock search
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchResults = React.useMemo(() => {
+    const q = searchQuery.trim().toUpperCase();
+    if (!q) return [];
+    const list = ctx.instruments || [];
+    return list
+      .filter((i) => {
+        const sym = String(i.symbol || '').toUpperCase();
+        const name = String(i.name || '').toUpperCase();
+        return sym.includes(q) || name.includes(q);
+      })
+      .slice(0, 8);
+  }, [searchQuery, ctx.instruments]);
+
   useEffect(() => {
     let mounted = true;
 
@@ -1433,76 +1448,162 @@ const HomeTab = ({ navigation }) => {
       style={[styles.container, { backgroundColor: colors.bgPrimary }]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
     >
-      {/* Top nav bar — hamburger | wallet pill | bell | avatar */}
+      {/* Top nav bar — avatar | search | bell */}
       <View
         style={{
-          flexDirection: 'row',
-          alignItems: 'center',
           paddingTop: insets.top + 8,
           paddingHorizontal: 14,
           paddingBottom: 12,
-          gap: 10,
           backgroundColor: colors.bgPrimary,
+          zIndex: 10,
         }}
       >
-        {/* Spacer (wallet pill removed) */}
-        <View style={{ flex: 1 }} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          {/* User avatar (left) */}
+          <TouchableOpacity
+            onPress={() => parentNav?.navigate('Profile')}
+            activeOpacity={0.75}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 22,
+              backgroundColor: colors.primary,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>{userInitials}</Text>
+          </TouchableOpacity>
 
-        {/* Notification bell with badge */}
-        <TouchableOpacity
-          onPress={() => parentNav?.navigate('Notifications')}
-          activeOpacity={0.75}
-          style={{
-            width: 44,
-            height: 44,
-            borderRadius: 22,
-            backgroundColor: colors.bgCard,
-            borderWidth: 1,
-            borderColor: colors.border,
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <Ionicons name="notifications-outline" size={20} color={colors.textPrimary} />
-          {unreadCount > 0 && (
-            <View
+          {/* Search bar (middle) */}
+          <View
+            style={{
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              height: 44,
+              borderRadius: 22,
+              backgroundColor: colors.bgCard,
+              borderWidth: 1,
+              borderColor: colors.border,
+              paddingHorizontal: 14,
+              gap: 8,
+            }}
+          >
+            <Ionicons name="search" size={18} color={colors.textMuted} />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search"
+              placeholderTextColor={colors.textMuted}
               style={{
-                position: 'absolute',
-                top: -2,
-                right: -2,
-                minWidth: 18,
-                height: 18,
-                paddingHorizontal: 4,
-                borderRadius: 9,
-                backgroundColor: colors.error,
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderWidth: 2,
-                borderColor: colors.bgPrimary,
+                flex: 1,
+                color: colors.textPrimary,
+                fontSize: 14,
+                paddingVertical: 0,
               }}
-            >
-              <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>
-                {unreadCount > 99 ? '99+' : unreadCount}
-              </Text>
-            </View>
-          )}
-        </TouchableOpacity>
+              autoCapitalize="characters"
+              autoCorrect={false}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+              </TouchableOpacity>
+            )}
+          </View>
 
-        {/* User avatar */}
-        <TouchableOpacity
-          onPress={() => parentNav?.navigate('Profile')}
-          activeOpacity={0.75}
-          style={{
-            width: 44,
-            height: 44,
-            borderRadius: 22,
-            backgroundColor: colors.primary,
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>{userInitials}</Text>
-        </TouchableOpacity>
+          {/* Notification bell (right) with badge */}
+          <TouchableOpacity
+            onPress={() => parentNav?.navigate('Notifications')}
+            activeOpacity={0.75}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 22,
+              backgroundColor: colors.bgCard,
+              borderWidth: 1,
+              borderColor: colors.border,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Ionicons name="notifications-outline" size={20} color={colors.textPrimary} />
+            {unreadCount > 0 && (
+              <View
+                style={{
+                  position: 'absolute',
+                  top: -2,
+                  right: -2,
+                  minWidth: 18,
+                  height: 18,
+                  paddingHorizontal: 4,
+                  borderRadius: 9,
+                  backgroundColor: colors.error,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderWidth: 2,
+                  borderColor: colors.bgPrimary,
+                }}
+              >
+                <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Search results dropdown */}
+        {searchQuery.trim().length > 0 && (
+          <View
+            style={{
+              marginTop: 8,
+              borderRadius: 12,
+              backgroundColor: colors.bgCard,
+              borderWidth: 1,
+              borderColor: colors.border,
+              overflow: 'hidden',
+            }}
+          >
+            {searchResults.length === 0 ? (
+              <View style={{ padding: 14, alignItems: 'center' }}>
+                <Text style={{ color: colors.textMuted, fontSize: 13 }}>No results</Text>
+              </View>
+            ) : (
+              searchResults.map((item, idx) => (
+                <TouchableOpacity
+                  key={item.symbol || idx}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    setSearchQuery('');
+                    navigation.navigate('Chart', { symbol: item.symbol });
+                  }}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    paddingHorizontal: 14,
+                    paddingVertical: 12,
+                    borderTopWidth: idx === 0 ? 0 : StyleSheet.hairlineWidth,
+                    borderTopColor: colors.border,
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>{item.symbol}</Text>
+                    {!!item.name && (
+                      <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 2 }} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                    )}
+                  </View>
+                  {!!item.category && (
+                    <Text style={{ color: colors.textSecondary, fontSize: 11 }}>{item.category}</Text>
+                  )}
+                </TouchableOpacity>
+              ))
+            )}
+          </View>
+        )}
       </View>
 
 
