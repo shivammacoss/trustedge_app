@@ -1445,30 +1445,8 @@ const HomeTab = ({ navigation }) => {
           backgroundColor: colors.bgPrimary,
         }}
       >
-        {/* Wallet pill */}
-        <TouchableOpacity
-          onPress={() => parentNav?.navigate('Wallet')}
-          activeOpacity={0.85}
-          style={{
-            flex: 1,
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-            paddingHorizontal: 16,
-            height: 44,
-            borderRadius: 22,
-            borderWidth: 1.5,
-            borderColor: colors.primary,
-            backgroundColor: colors.primary + '15',
-          }}
-        >
-          <Ionicons name="wallet-outline" size={18} color={colors.primary} />
-          <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '800' }}>
-            ${Number(walletBal).toFixed(2)}
-          </Text>
-          <Ionicons name="chevron-down" size={14} color={colors.primary} />
-        </TouchableOpacity>
+        {/* Spacer (wallet pill removed) */}
+        <View style={{ flex: 1 }} />
 
         {/* Notification bell with badge */}
         <TouchableOpacity
