@@ -1153,7 +1153,8 @@ const HomeTab = ({ navigation }) => {
         let bal = wData.main_wallet_balance ?? wData.wallet_balance ?? wData.main_balance ?? wData.balance ?? wData.total;
 
         // If /wallet/summary didn't return balance, try /wallet/{userId}
-        if (bal == null || bal === 0) {
+        // API sometimes returns strings like "0" or "100.50" — coerce to Number
+        if (bal == null || Number(bal) === 0 || Number.isNaN(Number(bal))) {
           try {
             const userData = await SecureStore.getItemAsync('user');
             if (userData) {
@@ -1173,10 +1174,10 @@ const HomeTab = ({ navigation }) => {
         }
 
         // Final fallback: derive from account totals
-        if (bal == null) {
+        if (bal == null || Number(bal) === 0 || Number.isNaN(Number(bal))) {
           const acctList = Array.isArray(aData.items) ? aData.items : (Array.isArray(aData) ? aData : []);
           const acctTotal = acctList.reduce((s, a) => s + Number(a?.balance || 0), 0);
-          bal = acctTotal;
+          if (acctTotal > 0) bal = acctTotal;
         }
         if (mounted) setWalletBal(Math.max(0, Number(bal) || 0));
 

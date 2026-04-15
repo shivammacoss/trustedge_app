@@ -119,8 +119,8 @@ const WalletScreen = ({ navigation }) => {
         const walletData = await walletRes.json();
         let mainBal = walletData.main_wallet_balance ?? walletData.wallet_balance ?? walletData.balance;
 
-        // Fallback: /wallet/summary returned 0 or missing — try /wallet/:userId
-        if (mainBal == null || Number(mainBal) === 0) {
+        // Fallback: /wallet/summary returned 0, missing, or NaN — try /wallet/:userId
+        if (mainBal == null || Number(mainBal) === 0 || Number.isNaN(Number(mainBal))) {
           try {
             const userData = await SecureStore.getItemAsync('user');
             if (userData) {
