@@ -1470,19 +1470,14 @@ const HomeTab = ({ navigation }) => {
           gap: 8,
         }}
       >
-        {/* Logo — tap to open side drawer (web mobile "More" sidebar) */}
-        <TouchableOpacity
-          onPress={openDrawer}
-          activeOpacity={0.75}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          style={{ padding: 4 }}
-        >
+        {/* Logo — non-interactive */}
+        <View style={{ padding: 4 }}>
           <Image
             source={require('../../assets/logo.png')}
             style={{ width: 48, height: 48, borderRadius: 10 }}
             resizeMode="contain"
           />
-        </TouchableOpacity>
+        </View>
 
         {/* Search bar (replaces wallet pill) */}
         <View
