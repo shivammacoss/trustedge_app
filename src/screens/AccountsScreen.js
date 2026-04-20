@@ -160,12 +160,32 @@ const AccountsScreen = ({ navigation, route }) => {
     try {
       const token = await SecureStore.getItemAsync('token');
       if (!token) return;
-      const res = await fetch(`${API_URL}/wallet/summary`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await res.json();
-      // Use main_wallet_balance (wallet's own funds, NOT trading account totals).
-      const mainBal = data.main_wallet_balance ?? data.wallet_balance ?? data.balance ?? 0;
+      const headers = { 'Authorization': `Bearer ${token}` };
+      const res = await fetch(`${API_URL}/wallet/summary`, { headers });
+      const data = await res.json().catch(() => ({}));
+      // API sometimes returns strings like "0" or "100.50" — coerce + check via Number
+      let mainBal = data.main_wallet_balance ?? data.wallet_balance ?? data.balance;
+
+      // Fallback: /wallet/summary returned 0/missing — try /wallet/:userId
+      if (mainBal == null || Number(mainBal) === 0 || Number.isNaN(Number(mainBal))) {
+        try {
+          const userData = await SecureStore.getItemAsync('user');
+          if (userData) {
+            const u = JSON.parse(userData);
+            const userId = u._id || u.id;
+            if (userId) {
+              const r2 = await fetch(`${API_URL}/wallet/${userId}`, { headers });
+              if (r2.ok) {
+                const d2 = await r2.json().catch(() => ({}));
+                const w = d2.wallet || d2;
+                const fb = w.main_wallet_balance ?? w.wallet_balance ?? w.balance;
+                if (fb != null && Number(fb) > 0) mainBal = fb;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
       setWalletBalance(Number(mainBal) || 0);
     } catch (e) {
       console.error('Error fetching wallet:', e);
