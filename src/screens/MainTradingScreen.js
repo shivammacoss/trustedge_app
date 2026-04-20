@@ -1120,6 +1120,21 @@ const HomeTab = ({ navigation }) => {
   const [marketTab, setMarketTab] = useState('watchlist');
   const sessionOpenRef = useRef({});
 
+  // Top-bar stock search
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchResults = React.useMemo(() => {
+    const q = searchQuery.trim().toUpperCase();
+    if (!q) return [];
+    const list = ctx.instruments || [];
+    return list
+      .filter((i) => {
+        const sym = String(i.symbol || '').toUpperCase();
+        const name = String(i.name || '').toUpperCase();
+        return sym.includes(q) || name.includes(q);
+      })
+      .slice(0, 8);
+  }, [searchQuery, ctx.instruments]);
+
   useEffect(() => {
     const lp = ctx.livePrices || {};
     Object.keys(lp).forEach((sym) => {
@@ -1468,26 +1483,36 @@ const HomeTab = ({ navigation }) => {
           />
         </TouchableOpacity>
 
-        <View style={{ flex: 1 }} />
-
-        {/* Balance pill — main wallet only */}
+        {/* Search bar (replaces wallet pill) */}
         <View
           style={{
+            flex: 1,
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 6,
-            paddingHorizontal: 10,
-            paddingVertical: 6,
-            borderRadius: 999,
-            backgroundColor: colors.primary + '14',
+            height: 38,
+            borderRadius: 19,
+            backgroundColor: colors.bgCard,
             borderWidth: 1,
-            borderColor: colors.primary + '44',
+            borderColor: colors.border,
+            paddingHorizontal: 12,
+            gap: 6,
           }}
         >
-          <Ionicons name="wallet-outline" size={13} color={colors.primary} />
-          <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '800' }}>
-            {fmtMoney(walletBal)}
-          </Text>
+          <Ionicons name="search" size={16} color={colors.textMuted} />
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search stocks"
+            placeholderTextColor={colors.textMuted}
+            style={{ flex: 1, color: colors.textPrimary, fontSize: 13, paddingVertical: 0 }}
+            autoCapitalize="characters"
+            autoCorrect={false}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close-circle" size={14} color={colors.textMuted} />
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* Bell with badge */}
@@ -1548,6 +1573,60 @@ const HomeTab = ({ navigation }) => {
           <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '800' }}>{userInitials}</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Search results dropdown */}
+      {searchQuery.trim().length > 0 && (
+        <View
+          style={{
+            marginHorizontal: 14,
+            marginTop: 6,
+            borderRadius: 12,
+            backgroundColor: colors.bgCard,
+            borderWidth: 1,
+            borderColor: colors.border,
+            overflow: 'hidden',
+            zIndex: 20,
+          }}
+        >
+          {searchResults.length === 0 ? (
+            <View style={{ padding: 14, alignItems: 'center' }}>
+              <Text style={{ color: colors.textMuted, fontSize: 13 }}>No results</Text>
+            </View>
+          ) : (
+            searchResults.map((item, idx) => (
+              <TouchableOpacity
+                key={item.symbol || idx}
+                activeOpacity={0.7}
+                onPress={() => {
+                  setSearchQuery('');
+                  navigation.navigate('Chart', { symbol: item.symbol });
+                }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  paddingHorizontal: 14,
+                  paddingVertical: 12,
+                  borderTopWidth: idx === 0 ? 0 : StyleSheet.hairlineWidth,
+                  borderTopColor: colors.border,
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>{item.symbol}</Text>
+                  {!!item.name && (
+                    <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 2 }} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                  )}
+                </View>
+                {!!item.category && (
+                  <Text style={{ color: colors.textSecondary, fontSize: 11 }}>{item.category}</Text>
+                )}
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+      )}
 
       {/* Tabs: Accounts | Internal Transfer */}
       <View
