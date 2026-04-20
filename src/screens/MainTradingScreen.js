@@ -1094,51 +1094,142 @@ const MiniSparkline = ({ seed, positive }) => {
   );
 };
 
-// HOME TAB
+// HOME TAB — matches web mobile accounts view (top bar + tabs + accounts/transfer)
 const HomeTab = ({ navigation }) => {
   const ctx = React.useContext(TradingContext);
-  const { colors, isDark } = useTheme();
+  const { colors, isDark, toggleTheme } = useTheme();
   const insets = useSafeAreaInsets();
   const parentNav = navigation.getParent();
   const [refreshing, setRefreshing] = useState(false);
-  const sessionOpenRef = useRef({});
-  
-  // Banner slider state
-  const [banners, setBanners] = useState([]);
-  const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
-  const bannerScrollRef = React.useRef(null);
-  
-  // Copy Trade Masters state
-  const [masters, setMasters] = useState([]);
-  const [mySubscriptions, setMySubscriptions] = useState([]);
-  const [selectedMaster, setSelectedMaster] = useState(null);
-  const [showMasterModal, setShowMasterModal] = useState(false);
-  const [isFollowing, setIsFollowing] = useState(false);
-  
-  // Market data tabs state
-  const [marketTab, setMarketTab] = useState('watchlist'); // 'watchlist', 'gainers', 'losers'
 
-  // Account picker modal state
-  const [showAccountPicker, setShowAccountPicker] = useState(false);
-
-  // Main wallet balance + unread count (top nav, polled — not deps-based to avoid loops)
+  // Wallet balance + unread notification count (polled every 15s)
   const [walletBal, setWalletBal] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
 
-  // Top-bar stock search
-  const [searchQuery, setSearchQuery] = useState('');
-  const searchResults = React.useMemo(() => {
-    const q = searchQuery.trim().toUpperCase();
-    if (!q) return [];
-    const list = ctx.instruments || [];
-    return list
-      .filter((i) => {
-        const sym = String(i.symbol || '').toUpperCase();
-        const name = String(i.name || '').toUpperCase();
-        return sym.includes(q) || name.includes(q);
+  // Home tab state: 'accounts' or 'transfer'
+  const [homeTab, setHomeTab] = useState('accounts');
+  const [expandedAccountId, setExpandedAccountId] = useState(null);
+
+  // Internal Transfer state
+  const [transferFrom, setTransferFrom] = useState('wallet');
+  const [transferTo, setTransferTo] = useState('');
+  const [transferAmount, setTransferAmount] = useState('');
+  const [transferSubmitting, setTransferSubmitting] = useState(false);
+
+  // Markets section (watchlist / gainers / losers)
+  const [marketTab, setMarketTab] = useState('watchlist');
+  const sessionOpenRef = useRef({});
+
+  useEffect(() => {
+    const lp = ctx.livePrices || {};
+    Object.keys(lp).forEach((sym) => {
+      if (sessionOpenRef.current[sym] != null) return;
+      const row = lp[sym];
+      const bid = row?.bid;
+      const ask = row?.ask;
+      const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (ask || bid);
+      if (mid > 0) sessionOpenRef.current[sym] = mid;
+    });
+  }, [ctx.livePrices]);
+
+  const marketData = React.useMemo(() => {
+    const instruments = ctx.instruments || [];
+    const prices = ctx.livePrices || {};
+    const withChanges = instruments
+      .map((inst) => {
+        if (!inst?.symbol) return null;
+        const sym = inst.symbol;
+        const p = prices[sym] || {};
+        const bid = Number(p.bid ?? inst.bid ?? 0);
+        const ask = Number(p.ask ?? inst.ask ?? 0);
+        const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (ask || bid || 0);
+        if (!mid || mid <= 0) return null;
+        let change = 0;
+        const apiPct = p.change_percent ?? p.change_pct ?? p.pct_change ?? p.percent_change;
+        if (apiPct != null && Number.isFinite(Number(apiPct))) {
+          change = Number(apiPct);
+        } else {
+          const open = p.open ?? p.prev_close ?? p.day_open ?? sessionOpenRef.current[sym];
+          if (open && Number(open) > 0) change = ((mid - Number(open)) / Number(open)) * 100;
+        }
+        return { ...inst, bid, ask, currentPrice: mid, change };
       })
-      .slice(0, 8);
-  }, [searchQuery, ctx.instruments]);
+      .filter(Boolean);
+
+    if (marketTab === 'gainers') {
+      return [...withChanges].filter((i) => i.change > 0).sort((a, b) => b.change - a.change).slice(0, 12);
+    }
+    if (marketTab === 'losers') {
+      return [...withChanges].filter((i) => i.change < 0).sort((a, b) => a.change - b.change).slice(0, 12);
+    }
+    const watch = withChanges.filter((i) => i.starred);
+    return (watch.length > 0 ? watch : withChanges).slice(0, 12);
+  }, [ctx.instruments, ctx.livePrices, marketTab]);
+
+  // Side drawer (tap logo to open, like web mobile "More" sidebar)
+  const drawerWidth = Math.min(320, Dimensions.get('window').width * 0.82);
+  const [drawerMounted, setDrawerMounted] = useState(false);
+  const drawerX = useRef(new Animated.Value(-drawerWidth)).current;
+  const backdropOpacity = useRef(new Animated.Value(0)).current;
+
+  const openDrawer = () => {
+    setDrawerMounted(true);
+    // next frame so the Modal is laid out before we animate
+    requestAnimationFrame(() => {
+      Animated.parallel([
+        Animated.spring(drawerX, {
+          toValue: 0,
+          useNativeDriver: true,
+          damping: 22,
+          stiffness: 220,
+          mass: 0.9,
+          overshootClamping: true,
+        }),
+        Animated.timing(backdropOpacity, {
+          toValue: 1,
+          duration: 220,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    });
+  };
+
+  const closeDrawer = (cb) => {
+    Animated.parallel([
+      Animated.timing(drawerX, {
+        toValue: -drawerWidth,
+        duration: 240,
+        useNativeDriver: true,
+      }),
+      Animated.timing(backdropOpacity, {
+        toValue: 0,
+        duration: 240,
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      if (finished) setDrawerMounted(false);
+      if (cb) cb();
+    });
+  };
+
+  const sideMenuItems = [
+    { icon: 'grid-outline', label: 'Accounts', screen: 'Accounts' },
+    { icon: 'card-outline', label: 'Deposit/Withdraw', screen: 'Wallet' },
+    { icon: 'receipt-outline', label: 'Transactions', screen: 'TransactionHistory' },
+    { icon: 'pie-chart-outline', label: 'Portfolio', screen: 'Portfolio' },
+    { icon: 'bar-chart-outline', label: 'PAMM', screen: 'Pamm' },
+    { icon: 'copy-outline', label: 'Copy Trading', screen: 'Social' },
+    { icon: 'people-outline', label: 'Affiliates', screen: 'Business', params: { initialTab: 'ib' } },
+    { icon: 'school-outline', label: 'TrustEdge Academy', screen: 'Academy' },
+    { icon: 'newspaper-outline', label: 'Economic News', screen: 'EconomicCalendar' },
+    { icon: 'calculator-outline', label: 'Risk Calculator', screen: 'RiskCalculator' },
+    { icon: 'book-outline', label: 'Orders', screen: 'OrderBook' },
+    { icon: 'person-outline', label: 'Profile', screen: 'Profile' },
+    { icon: 'help-circle-outline', label: 'Support', screen: 'Support' },
+  ];
+  const openSideMenuItem = (item) => {
+    closeDrawer(() => parentNav?.navigate(item.screen, item.params));
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -1229,196 +1320,14 @@ const HomeTab = ({ navigation }) => {
     try {
       await SecureStore.setItemAsync('selectedAccountId', aid);
     } catch (e) {}
-    setShowAccountPicker(false);
     if (ctx.fetchAccountSummary) ctx.fetchAccountSummary();
     if (ctx.fetchOpenTrades) ctx.fetchOpenTrades();
-  };
-
-  useEffect(() => {
-    const lp = ctx.livePrices || {};
-    Object.keys(lp).forEach((sym) => {
-      if (sessionOpenRef.current[sym] != null) return;
-      const row = lp[sym];
-      const bid = row?.bid;
-      const ask = row?.ask;
-      const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (ask || bid);
-      if (mid > 0) sessionOpenRef.current[sym] = mid;
-    });
-  }, [ctx.livePrices]);
-
-  // Fetch banners on mount
-  useEffect(() => {
-    fetchBanners();
-  }, []);
-
-  const fetchBanners = async () => {
-    try {
-      const token = await SecureStore.getItemAsync('token');
-      const res = await fetch(`${API_URL}/banners`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      const bannerList = data.items || data || [];
-      if (bannerList.length > 0) {
-        setBanners(bannerList);
-      }
-    } catch (e) {
-      // Silently ignore - banners are optional
-    }
-  };
-
-  // Auto-scroll banners
-  useEffect(() => {
-    if (banners.length <= 1) return;
-    const interval = setInterval(() => {
-      setCurrentBannerIndex((prev) => (prev + 1) % banners.length);
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [banners.length]);
-
-  // Scroll to current banner
-  useEffect(() => {
-    if (bannerScrollRef.current && banners.length > 0) {
-      bannerScrollRef.current.scrollTo({
-        x: currentBannerIndex * (Dimensions.get('window').width - 32),
-        animated: true
-      });
-    }
-  }, [currentBannerIndex, banners.length]);
-
-  // Fetch masters on mount
-  useEffect(() => {
-    fetchMasters();
-    fetchMySubscriptions();
-  }, []);
-
-  const fetchMasters = async () => {
-    try {
-      const token = await SecureStore.getItemAsync('token');
-      const res = await fetch(`${API_URL}/social/masters`, {
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-      });
-      if (!res.ok) { setMasters([]); return; }
-      const data = await res.json();
-      setMasters(data.items || data.masters || data || []);
-    } catch (e) {
-      setMasters([]);
-    }
-  };
-
-  const fetchMySubscriptions = async () => {
-    if (!ctx.user?.id && !ctx.user?._id) return;
-    try {
-      const token = await SecureStore.getItemAsync('token');
-      const res = await fetch(`${API_URL}/social/subscriptions`, {
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-      });
-      if (!res.ok) { setMySubscriptions([]); return; }
-      const data = await res.json();
-      setMySubscriptions(data.items || data.subscriptions || data || []);
-    } catch (e) {
-      setMySubscriptions([]);
-    }
-  };
-
-  const isFollowingMaster = (masterId) => {
-    if (!masterId) return false;
-    return mySubscriptions.some(
-      (sub) =>
-        (sub.masterTraderId?._id === masterId || sub.masterTraderId?.id === masterId) &&
-        sub.status === 'ACTIVE'
-    );
-  };
-
-  const handleFollowMaster = async (master) => {
-    if (!ctx.selectedAccount) {
-      Alert.alert('Error', 'Please select a trading account first');
-      return;
-    }
-    setIsFollowing(true);
-    try {
-      const token = await SecureStore.getItemAsync('token');
-      const masterId = master.id || master._id;
-      const accountId = ctx.selectedAccount.id || ctx.selectedAccount._id;
-      const res = await fetch(`${API_URL}/social/follow`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({
-          provider_id: masterId,
-          account_id: accountId,
-          copy_mode: 'fixed_lot',
-          fixed_lot_size: 0.01
-        })
-      });
-      if (res.ok) {
-        Alert.alert('Success', `Now following master trader`);
-        fetchMySubscriptions();
-        setShowMasterModal(false);
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        Alert.alert('Error', errData.detail || 'Failed to follow');
-      }
-    } catch (e) {
-      Alert.alert('Error', 'Failed to follow master');
-    }
-    setIsFollowing(false);
-  };
-
-  const getMarketData = () => {
-    const instruments = ctx.instruments || [];
-    const prices = ctx.livePrices || {};
-    const withChanges = instruments
-      .map((inst) => {
-        if (!inst?.symbol) return null;
-        const sym = inst.symbol;
-        const p = prices[sym] || {};
-        const bid = Number(p.bid ?? inst.bid ?? 0);
-        const ask = Number(p.ask ?? inst.ask ?? 0);
-        const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : (ask || bid || 0);
-        if (!mid || mid <= 0) return null;
-        let change = 0;
-        const apiPct = p.change_percent ?? p.change_pct ?? p.pct_change ?? p.percent_change;
-        if (apiPct != null && Number.isFinite(Number(apiPct))) {
-          change = Number(apiPct);
-        } else {
-          const open = p.open ?? p.prev_close ?? p.day_open ?? sessionOpenRef.current[sym];
-          if (open && Number(open) > 0) {
-            change = ((mid - Number(open)) / Number(open)) * 100;
-          }
-        }
-        return { ...inst, bid, ask, currentPrice: mid, change };
-      })
-      .filter(Boolean);
-
-    if (marketTab === 'gainers') {
-      return [...withChanges]
-        .filter((i) => i.change > 0)
-        .sort((a, b) => b.change - a.change)
-        .slice(0, 12);
-    }
-    if (marketTab === 'losers') {
-      return [...withChanges]
-        .filter((i) => i.change < 0)
-        .sort((a, b) => a.change - b.change)
-        .slice(0, 12);
-    }
-    const watch = withChanges.filter((i) => i.starred);
-    if (watch.length > 0) return watch.slice(0, 12);
-    return withChanges.slice(0, 12);
   };
 
   // Refresh accounts when screen gains focus (e.g., after creating new account)
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
-      if (ctx.refreshAccounts) {
-        ctx.refreshAccounts();
-      }
-      fetchMasters();
-      fetchMySubscriptions();
+      if (ctx.refreshAccounts) ctx.refreshAccounts();
     });
     return unsubscribe;
   }, [navigation, ctx.refreshAccounts]);
@@ -1426,14 +1335,98 @@ const HomeTab = ({ navigation }) => {
   const onRefresh = async () => {
     setRefreshing(true);
     await Promise.all([
-      ctx.refreshAccounts(),
-      ctx.fetchAccountSummary(),
-      ctx.fetchOpenTrades(),
-      fetchMasters(),
-      fetchMySubscriptions()
+      ctx.refreshAccounts && ctx.refreshAccounts(),
+      ctx.fetchAccountSummary && ctx.fetchAccountSummary(),
     ]);
     setRefreshing(false);
   };
+
+  // ── Live accounts + transfer helpers ──────────────────────────
+  const liveAccounts = React.useMemo(
+    () => (ctx.accounts || []).filter((a) => !isDemoTradingAccount(a)),
+    [ctx.accounts]
+  );
+
+  const transferOptions = React.useMemo(() => {
+    const opts = [
+      { id: 'wallet', label: 'Main Wallet', sublabel: 'Wallet', balance: walletBal },
+    ];
+    for (const a of liveAccounts) {
+      opts.push({
+        id: a.id || a._id,
+        label: `#${a.account_number || a.accountId || ''}`,
+        sublabel: a.account_group?.name || a.accountTypeId?.name || 'Live',
+        balance: Number(a.free_margin ?? a.balance ?? 0),
+      });
+    }
+    return opts;
+  }, [liveAccounts, walletBal]);
+
+  useEffect(() => {
+    if (!transferTo && transferOptions.length > 1) {
+      setTransferTo(transferOptions[1].id);
+    }
+  }, [transferOptions, transferTo]);
+
+  const transferFromBalance = React.useMemo(() => {
+    const o = transferOptions.find((x) => x.id === transferFrom);
+    return o ? o.balance : 0;
+  }, [transferFrom, transferOptions]);
+
+  const swapTransferDirection = () => {
+    const prev = transferFrom;
+    setTransferFrom(transferTo);
+    setTransferTo(prev);
+  };
+
+  const submitTransfer = async () => {
+    const amt = parseFloat(transferAmount);
+    if (!amt || amt <= 0) { Alert.alert('Invalid amount', 'Enter a valid amount'); return; }
+    if (transferFrom === transferTo) { Alert.alert('Invalid', 'Source and destination must differ'); return; }
+    if (amt > transferFromBalance + 1e-9) { Alert.alert('Insufficient balance', 'Not enough funds to transfer'); return; }
+    setTransferSubmitting(true);
+    try {
+      const token = await SecureStore.getItemAsync('token');
+      let path, body;
+      if (transferFrom === 'wallet') {
+        path = '/wallet/transfer-main-to-trading';
+        body = { to_account_id: transferTo, amount: amt };
+      } else if (transferTo === 'wallet') {
+        path = '/wallet/transfer-trading-to-main';
+        body = { from_account_id: transferFrom, amount: amt };
+      } else {
+        path = '/wallet/transfer-internal';
+        body = { from_account_id: transferFrom, to_account_id: transferTo, amount: amt };
+      }
+      const res = await fetch(`${API_URL}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || data?.message || 'Transfer failed');
+      Alert.alert('Success', `Transferred $${amt.toFixed(2)}`);
+      setTransferAmount('');
+      if (ctx.refreshAccounts) await ctx.refreshAccounts();
+    } catch (e) {
+      Alert.alert('Transfer failed', e?.message || 'Please try again');
+    } finally {
+      setTransferSubmitting(false);
+    }
+  };
+
+  const accountDisplayLabel = (a) => {
+    const n = String(a?.account_number || '');
+    if (a?.is_demo) return 'Demo Account';
+    if (n.startsWith('PM')) return 'PAMM Pool Account';
+    if (n.startsWith('MM')) return 'MAM Pool Account';
+    if (n.startsWith('CT')) return 'Copy Trade Pool Account';
+    if (n.startsWith('CF')) return 'Copy Trade Account';
+    if (n.startsWith('IF')) return 'Investment Account';
+    return 'Live Account';
+  };
+
+  const fmtMoney = (n) => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   if (ctx.loading) {
     return (
@@ -1443,680 +1436,1068 @@ const HomeTab = ({ navigation }) => {
     );
   }
 
+  const visibleAccounts = (ctx.accounts || []).filter((a) => a && (a.is_active !== false));
+
   return (
-    <ScrollView 
-      style={[styles.container, { backgroundColor: colors.bgPrimary }]}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
-    >
-      {/* Top nav bar — avatar | search | bell */}
+    <View style={{ flex: 1, backgroundColor: colors.bgPrimary }}>
+      {/* Top bar — Logo + Balance pill + Bell + Avatar (web mobile view) */}
       <View
         style={{
           paddingTop: insets.top + 8,
           paddingHorizontal: 14,
           paddingBottom: 12,
           backgroundColor: colors.bgPrimary,
-          zIndex: 10,
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: colors.border,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
         }}
       >
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          {/* User avatar (left) */}
-          <TouchableOpacity
-            onPress={() => parentNav?.navigate('Profile')}
-            activeOpacity={0.75}
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: 22,
-              backgroundColor: colors.primary,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>{userInitials}</Text>
-          </TouchableOpacity>
+        {/* Logo — tap to open side drawer (web mobile "More" sidebar) */}
+        <TouchableOpacity
+          onPress={openDrawer}
+          activeOpacity={0.75}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          style={{ padding: 4 }}
+        >
+          <Image
+            source={require('../../assets/logo.png')}
+            style={{ width: 48, height: 48, borderRadius: 10 }}
+            resizeMode="contain"
+          />
+        </TouchableOpacity>
 
-          {/* Search bar (middle) */}
-          <View
-            style={{
-              flex: 1,
-              flexDirection: 'row',
-              alignItems: 'center',
-              height: 44,
-              borderRadius: 22,
-              backgroundColor: colors.bgCard,
-              borderWidth: 1,
-              borderColor: colors.border,
-              paddingHorizontal: 14,
-              gap: 8,
-            }}
-          >
-            <Ionicons name="search" size={18} color={colors.textMuted} />
-            <TextInput
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Search"
-              placeholderTextColor={colors.textMuted}
-              style={{
-                flex: 1,
-                color: colors.textPrimary,
-                fontSize: 14,
-                paddingVertical: 0,
-              }}
-              autoCapitalize="characters"
-              autoCorrect={false}
-            />
-            {searchQuery.length > 0 && (
-              <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Ionicons name="close-circle" size={18} color={colors.textMuted} />
-              </TouchableOpacity>
-            )}
-          </View>
+        <View style={{ flex: 1 }} />
 
-          {/* Notification bell (right) with badge */}
-          <TouchableOpacity
-            onPress={() => parentNav?.navigate('Notifications')}
-            activeOpacity={0.75}
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: 22,
-              backgroundColor: colors.bgCard,
-              borderWidth: 1,
-              borderColor: colors.border,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Ionicons name="notifications-outline" size={20} color={colors.textPrimary} />
-            {unreadCount > 0 && (
-              <View
-                style={{
-                  position: 'absolute',
-                  top: -2,
-                  right: -2,
-                  minWidth: 18,
-                  height: 18,
-                  paddingHorizontal: 4,
-                  borderRadius: 9,
-                  backgroundColor: colors.error,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderWidth: 2,
-                  borderColor: colors.bgPrimary,
-                }}
-              >
-                <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>
-                  {unreadCount > 99 ? '99+' : unreadCount}
-                </Text>
-              </View>
-            )}
-          </TouchableOpacity>
+        {/* Balance pill — main wallet only */}
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+            paddingHorizontal: 10,
+            paddingVertical: 6,
+            borderRadius: 999,
+            backgroundColor: colors.primary + '14',
+            borderWidth: 1,
+            borderColor: colors.primary + '44',
+          }}
+        >
+          <Ionicons name="wallet-outline" size={13} color={colors.primary} />
+          <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '800' }}>
+            {fmtMoney(walletBal)}
+          </Text>
         </View>
 
-        {/* Search results dropdown */}
-        {searchQuery.trim().length > 0 && (
-          <View
-            style={{
-              marginTop: 8,
-              borderRadius: 12,
-              backgroundColor: colors.bgCard,
-              borderWidth: 1,
-              borderColor: colors.border,
-              overflow: 'hidden',
-            }}
-          >
-            {searchResults.length === 0 ? (
-              <View style={{ padding: 14, alignItems: 'center' }}>
-                <Text style={{ color: colors.textMuted, fontSize: 13 }}>No results</Text>
-              </View>
-            ) : (
-              searchResults.map((item, idx) => (
-                <TouchableOpacity
-                  key={item.symbol || idx}
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    setSearchQuery('');
-                    navigation.navigate('Chart', { symbol: item.symbol });
-                  }}
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    paddingHorizontal: 14,
-                    paddingVertical: 12,
-                    borderTopWidth: idx === 0 ? 0 : StyleSheet.hairlineWidth,
-                    borderTopColor: colors.border,
-                  }}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>{item.symbol}</Text>
-                    {!!item.name && (
-                      <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 2 }} numberOfLines={1}>
-                        {item.name}
-                      </Text>
-                    )}
-                  </View>
-                  {!!item.category && (
-                    <Text style={{ color: colors.textSecondary, fontSize: 11 }}>{item.category}</Text>
-                  )}
-                </TouchableOpacity>
-              ))
-            )}
-          </View>
-        )}
-      </View>
-
-
-      {/* Quick row — Vantage-style tiles */}
-      <View style={[styles.vantageQuickRow, { borderColor: colors.border }]}>
-        <TouchableOpacity style={styles.vantageQuickItem} onPress={() => parentNav?.navigate('Accounts')}>
-          <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
-            <Ionicons name="briefcase-outline" size={22} color={colors.primary} />
-          </View>
-          <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>Account</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.vantageQuickItem} onPress={() => parentNav?.navigate('Portfolio')}>
-          <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
-            <Ionicons name="pie-chart-outline" size={22} color={colors.primary} />
-          </View>
-          <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>Portfolio</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.vantageQuickItem} onPress={() => parentNav?.navigate('Social')}>
-          <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
-            <Ionicons name="people-outline" size={22} color={colors.primary} />
-          </View>
-          <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>Top Traders</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.vantageQuickItem} onPress={() => parentNav?.navigate('Wallet')}>
-          <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
-            <Ionicons name="wallet-outline" size={22} color={colors.primary} />
-          </View>
-          <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>Wallet</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.vantageQuickItem} onPress={() => navigation.navigate('More')}>
-          <View style={[styles.vantageQuickIconBg, { backgroundColor: colors.bgCard }]}>
-            <Ionicons name="newspaper-outline" size={22} color={colors.info} />
-          </View>
-          <Text style={[styles.vantageQuickLabel, { color: colors.textSecondary }]}>News & more</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Banner Slider */}
-      {banners.length > 0 && (
-        <View style={styles.bannerContainer}>
-          <ScrollView
-            ref={bannerScrollRef}
-            horizontal
-            pagingEnabled
-            showsHorizontalScrollIndicator={false}
-            onMomentumScrollEnd={(e) => {
-              const index = Math.round(e.nativeEvent.contentOffset.x / (Dimensions.get('window').width - 32));
-              setCurrentBannerIndex(index);
-            }}
-          >
-            {banners.map((banner, index) => (
-              <TouchableOpacity 
-                key={banner._id} 
-                activeOpacity={banner.link ? 0.8 : 1}
-                onPress={() => {
-                  if (banner.link) {
-                    Linking.openURL(banner.link).catch(() => {});
-                  }
-                }}
-                style={styles.bannerSlide}
-              >
-                <Image
-                  source={{ uri: `${API_BASE_URL}${banner.imageUrl}` }}
-                  style={styles.bannerImage}
-                  resizeMode="cover"
-                />
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-          {banners.length > 1 && (
-            <View style={styles.bannerDots}>
-              {banners.map((_, index) => (
-                <View
-                  key={index}
-                  style={[
-                    styles.bannerDot,
-                    { backgroundColor: index === currentBannerIndex ? '#CFF12F' : 'rgba(255,255,255,0.5)' }
-                  ]}
-                />
-              ))}
+        {/* Bell with badge */}
+        <TouchableOpacity
+          onPress={() => parentNav?.navigate('Notifications')}
+          activeOpacity={0.75}
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: 19,
+            backgroundColor: colors.bgCard,
+            borderWidth: 1,
+            borderColor: colors.border,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Ionicons name="notifications-outline" size={18} color={colors.textPrimary} />
+          {unreadCount > 0 && (
+            <View
+              style={{
+                position: 'absolute',
+                top: -2,
+                right: -2,
+                minWidth: 18,
+                height: 18,
+                paddingHorizontal: 4,
+                borderRadius: 9,
+                backgroundColor: colors.error,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderWidth: 2,
+                borderColor: colors.bgPrimary,
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </Text>
             </View>
           )}
-        </View>
-      )}
+        </TouchableOpacity>
 
-      {/* Copy Trade Masters - Horizontal Scrolling Cards */}
-      {masters.length > 0 && (
-        <View style={styles.mastersSection}>
-          <TouchableOpacity
-            style={styles.sectionHeader}
-            onPress={() => parentNav?.navigate('Social')}
-            activeOpacity={0.7}
+        {/* Avatar */}
+        <TouchableOpacity
+          onPress={() => parentNav?.navigate('Profile')}
+          activeOpacity={0.75}
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: 19,
+            backgroundColor: colors.primary + '22',
+            borderWidth: 1,
+            borderColor: colors.primary + '55',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Text style={{ color: colors.primary, fontSize: 12, fontWeight: '800' }}>{userInitials}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Tabs: Accounts | Internal Transfer */}
+      <View
+        style={{
+          flexDirection: 'row',
+          backgroundColor: colors.bgCard,
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: colors.border,
+        }}
+      >
+        {[
+          { id: 'accounts', label: 'Accounts' },
+          { id: 'transfer', label: 'Internal Transfer' },
+        ].map((t) => {
+          const active = homeTab === t.id;
+          return (
+            <TouchableOpacity
+              key={t.id}
+              style={{ flex: 1, paddingVertical: 16, alignItems: 'center' }}
+              onPress={() => setHomeTab(t.id)}
+              activeOpacity={0.75}
+            >
+              <Text
+                style={{
+                  fontSize: 14,
+                  color: active ? colors.primary : colors.textMuted,
+                  fontWeight: active ? '800' : '600',
+                }}
+              >
+                {t.label}
+              </Text>
+              {active && (
+                <View
+                  style={{
+                    position: 'absolute',
+                    bottom: 0,
+                    height: 3,
+                    width: '40%',
+                    backgroundColor: colors.primary,
+                    borderTopLeftRadius: 3,
+                    borderTopRightRadius: 3,
+                  }}
+                />
+              )}
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ padding: 14, paddingBottom: 120 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
+        showsVerticalScrollIndicator={false}
+      >
+        {homeTab === 'accounts' && (
+          <View
+            style={{
+              backgroundColor: colors.bgCard,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: colors.border,
+              padding: 18,
+            }}
           >
-            <Text style={[styles.copyTradingTitle, { color: colors.textPrimary }]}>Copy-Trading</Text>
-            <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
-          </TouchableOpacity>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.mastersScroll}>
-            {masters.slice(0, 10).map((master) => {
-              const mid = master._id || master.id;
-              const following = isFollowingMaster(mid);
-              const ret = Number(master.stats?.totalProfitGenerated ?? master.stats?.monthlyReturn ?? 0);
-              const positive = ret >= 0;
-              const idKey = String(mid || '');
-              return (
-                <TouchableOpacity
-                  key={idKey}
-                  style={[styles.masterCardVantage, { backgroundColor: colors.bgCard, borderColor: colors.border }]}
-                  onPress={() => { setSelectedMaster(master); setShowMasterModal(true); }}
-                >
-                  <View style={styles.masterCardTopRow}>
-                    <View style={[styles.masterAvatar, { backgroundColor: colors.primary + '28' }]}>
-                      <Text style={[styles.masterAvatarText, { color: colors.primary }]}>
-                        {master.userId?.firstName?.charAt(0) || 'M'}
-                      </Text>
-                    </View>
-                    {following && (
-                      <View style={styles.followingBadgeSmall}>
-                        <Ionicons name="checkmark" size={10} color={colors.success} />
+            <Text style={{ fontSize: 20, fontWeight: '800', color: colors.textPrimary, letterSpacing: -0.3 }}>
+              Trading Accounts
+            </Text>
+            <Text style={{ fontSize: 13, color: colors.textMuted, marginTop: 4, marginBottom: 14 }}>
+              Manage your trading accounts
+            </Text>
+
+            <TouchableOpacity
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                paddingVertical: 12,
+                borderRadius: 10,
+                borderWidth: 2,
+                borderColor: colors.primary,
+                marginBottom: 14,
+              }}
+              onPress={() => parentNav?.navigate('Accounts', { action: 'open' })}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="add" size={18} color={colors.primary} />
+              <Text style={{ color: colors.primary, fontSize: 14, fontWeight: '800' }}>New Account</Text>
+            </TouchableOpacity>
+
+            {ctx.loading ? (
+              <View style={{ alignItems: 'center', paddingVertical: 36, gap: 8 }}>
+                <ActivityIndicator color={colors.primary} />
+                <Text style={{ color: colors.textMuted, fontSize: 13 }}>Loading accounts…</Text>
+              </View>
+            ) : visibleAccounts.length === 0 ? (
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  borderRadius: 12,
+                  backgroundColor: colors.bgSecondary,
+                  padding: 20,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ fontSize: 13, color: colors.textMuted, textAlign: 'center' }}>
+                  You do not have a trading account yet. Open one to start.
+                </Text>
+              </View>
+            ) : (
+              visibleAccounts.map((row) => {
+                const aid = row.id || row._id;
+                const expanded = expandedAccountId === aid;
+                const balance = Number(row.balance) || 0;
+                const equity = Number(row.equity) || 0;
+                const pnl = equity - balance;
+                const pct = balance > 0 ? (equity / balance - 1) * 100 : 0;
+                const pnlPos = pnl >= 0;
+                const demo = isDemoTradingAccount(row);
+                const idLabel = demo
+                  ? `#D#${row.account_number || row.accountId || ''}`
+                  : `#L#${row.account_number || row.accountId || ''}`;
+                return (
+                  <View
+                    key={aid}
+                    style={{
+                      borderRadius: 14,
+                      borderWidth: 1,
+                      borderColor: expanded ? colors.primary + '80' : colors.border,
+                      backgroundColor: colors.bgPrimary,
+                      marginBottom: 10,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => setExpandedAccountId(expanded ? null : aid)}
+                      style={{ flexDirection: 'row', gap: 10, padding: 14, alignItems: 'flex-start' }}
+                    >
+                      <View
+                        style={{
+                          width: 9,
+                          height: 9,
+                          borderRadius: 5,
+                          marginTop: 8,
+                          backgroundColor: demo ? '#38bdf8' : colors.primary,
+                        }}
+                      />
+                      <View style={{ flex: 1 }}>
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            gap: 8,
+                            marginBottom: 10,
+                          }}
+                        >
+                          <Text style={{ fontSize: 14, fontWeight: '800', color: colors.textPrimary }}>
+                            {accountDisplayLabel(row)}
+                          </Text>
+                          <Text style={{ fontSize: 12, color: colors.textMuted, fontFamily: 'monospace' }}>
+                            {idLabel}
+                          </Text>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 10 }}>
+                          <View style={{ width: '50%' }}>
+                            <Text style={{ fontSize: 10, fontWeight: '600', color: colors.textMuted, letterSpacing: 0.3, marginBottom: 2 }}>
+                              Balance
+                            </Text>
+                            <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textPrimary }}>
+                              {fmtMoney(balance)}
+                            </Text>
+                          </View>
+                          <View style={{ width: '50%' }}>
+                            <Text style={{ fontSize: 10, fontWeight: '600', color: colors.textMuted, letterSpacing: 0.3, marginBottom: 2 }}>
+                              Equity
+                            </Text>
+                            <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textPrimary }}>
+                              {fmtMoney(equity)}
+                            </Text>
+                          </View>
+                          <View style={{ width: '50%' }}>
+                            <Text style={{ fontSize: 10, fontWeight: '600', color: colors.textMuted, letterSpacing: 0.3, marginBottom: 2 }}>
+                              P&amp;L
+                            </Text>
+                            <Text style={{ fontSize: 15, fontWeight: '800', color: pnlPos ? colors.primary : colors.error }}>
+                              ~ {pnlPos ? '+' : ''}{fmtMoney(pnl)}
+                            </Text>
+                            <Text style={{ fontSize: 10, fontWeight: '700', marginTop: 1, color: pnlPos ? colors.primary + 'b0' : colors.error + 'b0' }}>
+                              ({pnlPos ? '+' : ''}{pct.toFixed(2)}%)
+                            </Text>
+                          </View>
+                          <View style={{ width: '50%' }}>
+                            <Text style={{ fontSize: 10, fontWeight: '600', color: colors.textMuted, letterSpacing: 0.3, marginBottom: 2 }}>
+                              Leverage
+                            </Text>
+                            <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textPrimary }}>
+                              1:{String(row.leverage || '').replace(/^1:/, '') || '0'}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                      <Ionicons
+                        name={expanded ? 'chevron-up' : 'chevron-down'}
+                        size={20}
+                        color={colors.textMuted}
+                        style={{ marginTop: 4 }}
+                      />
+                    </TouchableOpacity>
+
+                    {expanded && (
+                      <View
+                        style={{
+                          borderTopWidth: StyleSheet.hairlineWidth,
+                          borderTopColor: colors.border,
+                          padding: 14,
+                          gap: 14,
+                        }}
+                      >
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 12 }}>
+                          <View style={{ width: '50%' }}>
+                            <Text style={{ fontSize: 10, color: colors.textMuted, fontWeight: '600', marginBottom: 2 }}>
+                              Free Margin
+                            </Text>
+                            <Text style={{ fontSize: 14, fontWeight: '700', color: colors.textPrimary }}>
+                              {fmtMoney(row.free_margin)}
+                            </Text>
+                          </View>
+                          <View style={{ width: '50%' }}>
+                            <Text style={{ fontSize: 10, color: colors.textMuted, fontWeight: '600', marginBottom: 2 }}>
+                              Margin Level
+                            </Text>
+                            <Text style={{ fontSize: 14, fontWeight: '700', color: colors.textPrimary }}>
+                              {Number.isFinite(Number(row.margin_level)) && Number(row.margin_level) > 0
+                                ? `${Number(row.margin_level).toFixed(2)}%`
+                                : '0.00%'}
+                            </Text>
+                          </View>
+                          <View style={{ width: '50%' }}>
+                            <Text style={{ fontSize: 10, color: colors.textMuted, fontWeight: '600', marginBottom: 2 }}>
+                              Currency
+                            </Text>
+                            <Text style={{ fontSize: 14, fontWeight: '700', color: colors.textPrimary }}>
+                              {row.currency || 'USD'}
+                            </Text>
+                          </View>
+                          <View style={{ width: '50%' }}>
+                            <Text style={{ fontSize: 10, color: colors.textMuted, fontWeight: '600', marginBottom: 2 }}>
+                              Type
+                            </Text>
+                            <Text style={{ fontSize: 14, fontWeight: '700', color: colors.textPrimary }}>
+                              {row.account_group?.name || row.accountTypeId?.name || (demo ? 'Demo' : 'Live')}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', gap: 8 }}>
+                          <TouchableOpacity
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 5,
+                              paddingHorizontal: 12,
+                              paddingVertical: 10,
+                              borderRadius: 8,
+                              borderWidth: 1,
+                              borderColor: colors.border,
+                            }}
+                            onPress={() =>
+                              parentNav?.navigate('Portfolio', {
+                                account_id: aid,
+                                account_no: row.account_number,
+                                tab: 'history',
+                              })
+                            }
+                          >
+                            <Ionicons name="book-outline" size={14} color={colors.textPrimary} />
+                            <Text style={{ fontSize: 13, fontWeight: '700', color: colors.textPrimary }}>Journal</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 5,
+                              paddingHorizontal: 14,
+                              paddingVertical: 10,
+                              borderRadius: 8,
+                              backgroundColor: colors.primary,
+                            }}
+                            onPress={async () => {
+                              await switchToAccount(row);
+                              navigation.navigate('Chart');
+                            }}
+                          >
+                            <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }}>Trade</Text>
+                            <Ionicons name="open-outline" size={13} color="#fff" />
+                          </TouchableOpacity>
+                        </View>
                       </View>
                     )}
                   </View>
-                  <Text style={[styles.masterNameVantage, { color: colors.textPrimary }]} numberOfLines={1}>
-                    {`${master.userId?.firstName || ''} ${master.userId?.lastName || ''}`.trim() || 'Master'}
-                  </Text>
-                  <Text style={[styles.masterReturnPct, { color: positive ? colors.success : colors.error }]}>
-                    {positive ? '+' : ''}{ret.toFixed(2)}%
-                  </Text>
-                  <Text style={[styles.masterReturnLabel, { color: colors.textMuted }]}>Return (1M)</Text>
-                  <MiniSparkline seed={idKey} positive={positive} />
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-        </View>
-      )}
-
-      {/* Watchlist / Gainers / Losers — Vantage-style tabs + 2-col grid */}
-      <View style={styles.marketDataSection}>
-        <View style={styles.vantageMarketTabsRow}>
-          {(['watchlist', 'gainers', 'losers']).map((tab) => (
-            <TouchableOpacity
-              key={tab}
-              style={styles.vantageMarketTabHit}
-              onPress={() => setMarketTab(tab)}
-              activeOpacity={0.7}
-            >
-              <Text
-                style={[
-                  styles.vantageMarketTabText,
-                  {
-                    color: marketTab === tab ? colors.textPrimary : colors.textMuted,
-                    fontWeight: marketTab === tab ? '700' : '500',
-                  },
-                ]}
-              >
-                {tab === 'watchlist' ? 'Watchlist' : tab === 'gainers' ? 'Gainers' : 'Losers'}
-              </Text>
-              {marketTab === tab && (
-                <View style={[styles.vantageMarketTabUnderline, { backgroundColor: colors.primary }]} />
-              )}
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        <View style={styles.marketGrid}>
-          {getMarketData().length === 0 && marketTab === 'watchlist' ? (
-            <View style={[styles.emptyWatchlistHome, { width: '100%' }]}>
-              <Ionicons name="star-outline" size={32} color={colors.textMuted} />
-              <Text style={[styles.emptyWatchlistHomeText, { color: colors.textSecondary }]}>No symbols in watchlist</Text>
-              <Text style={[styles.emptyWatchlistHomeHint, { color: colors.textMuted }]}>Add favourites from Markets</Text>
-            </View>
-          ) : getMarketData().length === 0 ? (
-            <View style={[styles.emptyWatchlistHome, { width: '100%' }]}>
-              <Ionicons name={marketTab === 'gainers' ? 'trending-up' : 'trending-down'} size={32} color={colors.textMuted} />
-              <Text style={[styles.emptyWatchlistHomeText, { color: colors.textSecondary }]}>No {marketTab} right now</Text>
-              <Text style={[styles.emptyWatchlistHomeHint, { color: colors.textMuted }]}>Pull to refresh or check back shortly</Text>
-            </View>
-          ) : (
-            getMarketData().map((inst) => {
-              if (!inst?.symbol) return null;
-              const isPositive = inst.change >= 0;
-              const decimals = inst.category === 'Forex' ? 5 : inst.category === 'Crypto' ? 2 : 2;
-              const cardW = (width - 42) / 2;
-              return (
-                <TouchableOpacity
-                  key={inst.symbol}
-                  style={[
-                    styles.marketGridCard,
-                    {
-                      width: cardW,
-                      backgroundColor: colors.bgCard,
-                      borderColor: colors.border,
-                    },
-                  ]}
-                  onPress={() => navigation.navigate('Chart')}
-                  activeOpacity={0.85}
-                >
-                  <Text style={[styles.gridSymbol, { color: colors.textPrimary }]}>{inst.symbol}</Text>
-                  <Text style={[styles.gridName, { color: colors.textMuted }]} numberOfLines={1}>{inst.name}</Text>
-                  <View style={styles.gridBottomRow}>
-                    <Text style={[styles.gridCategory, { color: colors.textSecondary }]}>{inst.category || 'Forex'}</Text>
-                    {inst.starred ? (
-                      <Ionicons name="checkmark-circle" size={18} color={colors.primary} />
-                    ) : (
-                      <Ionicons name="ellipse-outline" size={18} color={colors.textMuted} />
-                    )}
-                  </View>
-                  <Text style={[styles.gridPrice, { color: colors.textPrimary }]}>
-                    {inst.ask ? Number(inst.ask).toFixed(decimals) : '…'}
-                  </Text>
-                  <View style={[styles.gridChangePill, { backgroundColor: isPositive ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)' }]}>
-                    <Text style={{ color: isPositive ? colors.success : colors.error, fontSize: 12, fontWeight: '600' }}>
-                      {isPositive ? '+' : ''}{Number(inst.change || 0).toFixed(2)}%
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            })
-          )}
-        </View>
-
-        <TouchableOpacity
-          style={[
-            styles.addWatchlistPill,
-            { borderColor: isDark ? 'rgba(255,255,255,0.35)' : colors.border },
-          ]}
-          onPress={() => navigation.navigate('Market')}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="add" size={20} color={colors.textPrimary} />
-          <Text style={[styles.addWatchlistPillText, { color: colors.textPrimary }]}>Add to Watchlist</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Master Detail Modal */}
-      <Modal visible={showMasterModal} animationType="slide" transparent onRequestClose={() => setShowMasterModal(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.masterDetailModal, { backgroundColor: colors.bgCard }]}>
-            <View style={[styles.modalHandle, { backgroundColor: colors.border }]} />
-            <View style={styles.masterModalHeader}>
-              <Text style={[styles.masterModalTitle, { color: colors.textPrimary }]}>Master Profile</Text>
-              <TouchableOpacity onPress={() => setShowMasterModal(false)}>
-                <Ionicons name="close" size={24} color={colors.textPrimary} />
-              </TouchableOpacity>
-            </View>
-
-            {selectedMaster && (
-              <ScrollView showsVerticalScrollIndicator={false}>
-                {/* Master Info */}
-                <View style={styles.masterProfileCard}>
-                  <View style={[styles.masterProfileAvatar, { backgroundColor: colors.primary + '30' }]}>
-                    <Text style={[styles.masterProfileAvatarText, { color: colors.primary }]}>
-                      {selectedMaster.userId?.firstName?.charAt(0) || 'M'}
-                    </Text>
-                  </View>
-                  <Text style={[styles.masterProfileName, { color: colors.textPrimary }]}>
-                    {selectedMaster.userId?.firstName || 'Master Trader'}
-                  </Text>
-                  <Text style={[styles.masterProfileBio, { color: colors.textSecondary }]}>
-                    {selectedMaster.bio || 'Professional trader with consistent returns'}
-                  </Text>
-                  {isFollowingMaster(selectedMaster._id || selectedMaster.id) && (
-                    <View style={styles.followingBadgeLarge}>
-                      <Ionicons name="checkmark-circle" size={14} color={colors.success} />
-                      <Text style={[styles.followingBadgeLargeText, { color: colors.success }]}>Following</Text>
-                    </View>
-                  )}
-                </View>
-
-                {/* Stats Grid */}
-                <View style={styles.masterStatsGrid}>
-                  <View style={[styles.masterStatBox, { backgroundColor: colors.bgSecondary }]}>
-                    <Text style={[styles.masterStatLabel, { color: colors.textMuted }]}>Total Profit</Text>
-                    <Text style={[styles.masterStatValue, { color: colors.success }]}>
-                      ${(selectedMaster.stats?.totalProfitGenerated || 0).toFixed(2)}
-                    </Text>
-                  </View>
-                  <View style={[styles.masterStatBox, { backgroundColor: colors.bgSecondary }]}>
-                    <Text style={[styles.masterStatLabel, { color: colors.textMuted }]}>Win Rate</Text>
-                    <Text style={[styles.masterStatValue, { color: colors.textPrimary }]}>
-                      {(selectedMaster.stats?.winRate || 0).toFixed(1)}%
-                    </Text>
-                  </View>
-                  <View style={[styles.masterStatBox, { backgroundColor: colors.bgSecondary }]}>
-                    <Text style={[styles.masterStatLabel, { color: colors.textMuted }]}>Followers</Text>
-                    <Text style={[styles.masterStatValue, { color: colors.textPrimary }]}>
-                      {selectedMaster.stats?.totalFollowers || 0}
-                    </Text>
-                  </View>
-                  <View style={[styles.masterStatBox, { backgroundColor: colors.bgSecondary }]}>
-                    <Text style={[styles.masterStatLabel, { color: colors.textMuted }]}>Commission</Text>
-                    <Text style={[styles.masterStatValue, { color: colors.textPrimary }]}>
-                      {selectedMaster.approvedCommissionPercentage || 0}%
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Follow Button */}
-                {!isFollowingMaster(selectedMaster._id || selectedMaster.id) ? (
-                  <TouchableOpacity 
-                    style={[styles.followMasterBtn, { backgroundColor: colors.primary }, isFollowing && styles.btnDisabled]}
-                    onPress={() => handleFollowMaster(selectedMaster)}
-                    disabled={isFollowing}
-                  >
-                    {isFollowing ? (
-                      <ActivityIndicator size="small" color="#fff" />
-                    ) : (
-                      <>
-                        <Ionicons name="add-circle-outline" size={18} color="#fff" />
-                        <Text style={styles.followMasterBtnText}>Follow Master</Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                ) : (
-                  <View style={styles.alreadyFollowingBox}>
-                    <Ionicons name="checkmark-circle" size={20} color={colors.success} />
-                    <Text style={[styles.alreadyFollowingText, { color: colors.success }]}>You are following this master</Text>
-                  </View>
-                )}
-
-                {/* View Full Profile */}
-                <TouchableOpacity 
-                  style={styles.viewFullProfileBtn}
-                  onPress={() => { setShowMasterModal(false); parentNav?.navigate('Social'); }}
-                >
-                  <Text style={[styles.viewFullProfileText, { color: colors.primary }]}>View Full Profile</Text>
-                  <Ionicons name="arrow-forward" size={16} color={colors.primary} />
-                </TouchableOpacity>
-              </ScrollView>
+                );
+              })
             )}
           </View>
-        </View>
-      </Modal>
+        )}
 
-      {/* Account Picker Modal — switch active account or open new one */}
+        {homeTab === 'accounts' && (
+          <View style={{ marginTop: 16 }}>
+            {/* Markets heading */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, paddingHorizontal: 4 }}>
+              <Ionicons name="trending-up" size={22} color={colors.primary} />
+              <Text style={{ fontSize: 20, fontWeight: '800', color: colors.textPrimary, letterSpacing: -0.3 }}>
+                Markets
+              </Text>
+            </View>
+
+            {/* Pill tab row */}
+            <View
+              style={{
+                flexDirection: 'row',
+                backgroundColor: colors.bgCard,
+                borderRadius: 14,
+                padding: 6,
+                marginBottom: 12,
+                borderWidth: 1,
+                borderColor: colors.border,
+              }}
+            >
+              {[
+                { id: 'watchlist', label: 'Watchlist', icon: null },
+                { id: 'gainers', label: 'Gainers', icon: 'arrow-up', iconColor: colors.success },
+                { id: 'losers', label: 'Losers', icon: 'arrow-down', iconColor: colors.error },
+              ].map((t) => {
+                const active = marketTab === t.id;
+                return (
+                  <TouchableOpacity
+                    key={t.id}
+                    activeOpacity={0.75}
+                    onPress={() => setMarketTab(t.id)}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 10,
+                      borderRadius: 10,
+                      backgroundColor: active ? colors.primary : 'transparent',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 5,
+                    }}
+                  >
+                    {t.icon && (
+                      <Ionicons
+                        name={t.icon}
+                        size={14}
+                        color={active ? '#fff' : t.iconColor}
+                      />
+                    )}
+                    <Text
+                      style={{
+                        fontSize: 14,
+                        fontWeight: '800',
+                        color: active ? '#fff' : colors.textPrimary,
+                      }}
+                    >
+                      {t.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Market list */}
+            <View
+              style={{
+                backgroundColor: colors.bgCard,
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: colors.border,
+                overflow: 'hidden',
+              }}
+            >
+              {marketData.length === 0 ? (
+                <View style={{ padding: 36, alignItems: 'center', gap: 6 }}>
+                  <Ionicons
+                    name={
+                      marketTab === 'watchlist'
+                        ? 'star-outline'
+                        : marketTab === 'gainers'
+                        ? 'trending-up'
+                        : 'trending-down'
+                    }
+                    size={32}
+                    color={colors.textMuted}
+                  />
+                  <Text style={{ color: colors.textSecondary, fontSize: 13, fontWeight: '600', marginTop: 4 }}>
+                    {marketTab === 'watchlist'
+                      ? 'No symbols in watchlist'
+                      : `No ${marketTab} right now`}
+                  </Text>
+                  <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+                    Pull to refresh or check back shortly
+                  </Text>
+                </View>
+              ) : (
+                marketData.map((inst, idx) => {
+                  const isPositive = inst.change >= 0;
+                  const decimals = inst.category === 'Forex' ? 5 : 2;
+                  return (
+                    <TouchableOpacity
+                      key={inst.symbol}
+                      activeOpacity={0.75}
+                      onPress={() => navigation.navigate('Chart', { symbol: inst.symbol })}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        paddingVertical: 14,
+                        paddingHorizontal: 16,
+                        borderBottomWidth: idx < marketData.length - 1 ? StyleSheet.hairlineWidth : 0,
+                        borderBottomColor: colors.border,
+                      }}
+                    >
+                      <View style={{ flex: 1, marginRight: 12 }}>
+                        <Text style={{ fontSize: 16, fontWeight: '800', color: colors.textPrimary, letterSpacing: -0.2 }}>
+                          {inst.symbol}
+                        </Text>
+                        <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }} numberOfLines={1}>
+                          {inst.name || inst.category || ''}
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                        <Text style={{ fontSize: 16, fontWeight: '700', color: colors.textPrimary, fontVariant: ['tabular-nums'] }}>
+                          {inst.ask ? Number(inst.ask).toFixed(decimals) : '…'}
+                        </Text>
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 3,
+                            paddingHorizontal: 8,
+                            paddingVertical: 3,
+                            borderRadius: 6,
+                            backgroundColor: isPositive ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+                          }}
+                        >
+                          <Ionicons
+                            name={isPositive ? 'arrow-up' : 'arrow-down'}
+                            size={11}
+                            color={isPositive ? colors.success : colors.error}
+                          />
+                          <Text style={{ fontSize: 12, fontWeight: '800', color: isPositive ? colors.success : colors.error }}>
+                            {Math.abs(Number(inst.change || 0)).toFixed(2)}%
+                          </Text>
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </View>
+          </View>
+        )}
+
+        {homeTab === 'transfer' && (
+          <View
+            style={{
+              backgroundColor: colors.bgCard,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: colors.border,
+              padding: 18,
+            }}
+          >
+            <View style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start', marginBottom: 14 }}>
+              <View
+                style={{
+                  width: 42,
+                  height: 42,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: colors.primary + '44',
+                  backgroundColor: colors.primary + '18',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Ionicons name="swap-horizontal" size={20} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 20, fontWeight: '800', color: colors.textPrimary, letterSpacing: -0.3 }}>
+                  Internal Transfer
+                </Text>
+                <Text style={{ fontSize: 13, color: colors.textMuted, marginTop: 2 }}>
+                  Move funds between your main wallet and live trading accounts.
+                </Text>
+              </View>
+            </View>
+
+            {liveAccounts.length === 0 ? (
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  borderRadius: 12,
+                  backgroundColor: colors.bgSecondary,
+                  padding: 20,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ fontSize: 13, color: colors.textMuted, textAlign: 'center' }}>
+                  No live trading accounts yet. Open one to transfer.
+                </Text>
+              </View>
+            ) : (
+              <>
+                {/* FROM */}
+                <Text style={{ fontSize: 11, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.8, marginBottom: 8, marginTop: 4 }}>
+                  FROM
+                </Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                  {transferOptions.map((o) => {
+                    const active = transferFrom === o.id;
+                    return (
+                      <TouchableOpacity
+                        key={o.id}
+                        onPress={() => {
+                          setTransferFrom(o.id);
+                          if (transferTo === o.id) {
+                            const alt = transferOptions.find((x) => x.id !== o.id);
+                            if (alt) setTransferTo(alt.id);
+                          }
+                        }}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 6,
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          borderRadius: 999,
+                          borderWidth: 1,
+                          borderColor: active ? colors.primary : colors.border,
+                          backgroundColor: active ? colors.primary + '18' : colors.bgSecondary,
+                        }}
+                      >
+                        <Ionicons
+                          name={o.id === 'wallet' ? 'wallet' : 'briefcase'}
+                          size={14}
+                          color={active ? colors.primary : colors.textMuted}
+                        />
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: active ? colors.primary : colors.textPrimary }}>
+                          {o.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+                {(() => {
+                  const opt = transferOptions.find((x) => x.id === transferFrom);
+                  if (!opt) return null;
+                  const isWallet = opt.id === 'wallet';
+                  return (
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 10,
+                        padding: 12,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: colors.primary + '55',
+                        backgroundColor: colors.bgSecondary,
+                        marginTop: 8,
+                      }}
+                    >
+                      <View
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 18,
+                          backgroundColor: colors.primary + '18',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Ionicons name={isWallet ? 'wallet' : 'briefcase'} size={18} color={colors.primary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 14, fontWeight: '700', color: colors.textPrimary }}>{opt.label}</Text>
+                        <Text style={{ fontSize: 10, fontWeight: '600', color: colors.textMuted, marginTop: 2, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+                          {opt.sublabel}
+                        </Text>
+                      </View>
+                      <Text style={{ fontSize: 15, fontWeight: '800', color: colors.primary }}>{fmtMoney(opt.balance)}</Text>
+                    </View>
+                  );
+                })()}
+
+                {/* SWAP */}
+                <View style={{ alignItems: 'center', marginVertical: 10 }}>
+                  <TouchableOpacity
+                    onPress={swapTransferDirection}
+                    style={{
+                      width: 38,
+                      height: 38,
+                      borderRadius: 19,
+                      borderWidth: 1,
+                      borderColor: colors.primary + '55',
+                      backgroundColor: colors.bgSecondary,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Ionicons name="swap-vertical" size={18} color={colors.primary} />
+                  </TouchableOpacity>
+                </View>
+
+                {/* TO */}
+                <Text style={{ fontSize: 11, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.8, marginBottom: 8 }}>
+                  TO
+                </Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                  {transferOptions.filter((o) => o.id !== transferFrom).map((o) => {
+                    const active = transferTo === o.id;
+                    return (
+                      <TouchableOpacity
+                        key={o.id}
+                        onPress={() => setTransferTo(o.id)}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 6,
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          borderRadius: 999,
+                          borderWidth: 1,
+                          borderColor: active ? colors.primary : colors.border,
+                          backgroundColor: active ? colors.primary + '18' : colors.bgSecondary,
+                        }}
+                      >
+                        <Ionicons
+                          name={o.id === 'wallet' ? 'wallet' : 'briefcase'}
+                          size={14}
+                          color={active ? colors.primary : colors.textMuted}
+                        />
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: active ? colors.primary : colors.textPrimary }}>
+                          {o.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+                {(() => {
+                  const opt = transferOptions.find((x) => x.id === transferTo);
+                  if (!opt) return null;
+                  const isWallet = opt.id === 'wallet';
+                  return (
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 10,
+                        padding: 12,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        backgroundColor: colors.bgSecondary,
+                        marginTop: 8,
+                      }}
+                    >
+                      <View
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 18,
+                          backgroundColor: colors.primary + '18',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Ionicons name={isWallet ? 'wallet' : 'briefcase'} size={18} color={colors.primary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 14, fontWeight: '700', color: colors.textPrimary }}>{opt.label}</Text>
+                        <Text style={{ fontSize: 10, fontWeight: '600', color: colors.textMuted, marginTop: 2, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+                          {opt.sublabel}
+                        </Text>
+                      </View>
+                      <Text style={{ fontSize: 14, fontWeight: '800', color: colors.textPrimary }}>{fmtMoney(opt.balance)}</Text>
+                    </View>
+                  );
+                })()}
+
+                {/* AMOUNT */}
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    borderTopWidth: StyleSheet.hairlineWidth,
+                    borderTopColor: colors.border,
+                    paddingTop: 14,
+                    marginTop: 14,
+                    marginBottom: 8,
+                  }}
+                >
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: colors.textPrimary }}>Amount</Text>
+                  <TouchableOpacity
+                    onPress={() => setTransferAmount(transferFromBalance > 0 ? transferFromBalance.toFixed(2) : '')}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>
+                      Max: {fmtMoney(transferFromBalance)}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                <TextInput
+                  value={transferAmount}
+                  onChangeText={setTransferAmount}
+                  keyboardType="decimal-pad"
+                  placeholder="0.00"
+                  placeholderTextColor={colors.textMuted}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: colors.border,
+                    borderRadius: 12,
+                    paddingHorizontal: 14,
+                    paddingVertical: 12,
+                    fontSize: 16,
+                    fontWeight: '700',
+                    color: colors.textPrimary,
+                    backgroundColor: colors.bgSecondary,
+                  }}
+                />
+
+                <TouchableOpacity
+                  onPress={submitTransfer}
+                  disabled={
+                    transferSubmitting ||
+                    !transferAmount ||
+                    transferFrom === transferTo ||
+                    transferFromBalance <= 0
+                  }
+                  activeOpacity={0.85}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    paddingVertical: 14,
+                    borderRadius: 12,
+                    backgroundColor: colors.primary,
+                    marginTop: 14,
+                    opacity:
+                      transferSubmitting ||
+                      !transferAmount ||
+                      transferFrom === transferTo ||
+                      transferFromBalance <= 0
+                        ? 0.5
+                        : 1,
+                  }}
+                >
+                  <Ionicons name="swap-horizontal" size={18} color="#fff" />
+                  <Text style={{ color: '#fff', fontSize: 15, fontWeight: '800' }}>
+                    {transferSubmitting ? 'Transferring…' : 'Transfer'}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        )}
+      </ScrollView>
+
+      {/* Side drawer — opens when user taps the logo (web mobile "More" sidebar) */}
       <Modal
-        visible={showAccountPicker}
-        animationType="slide"
+        visible={drawerMounted}
         transparent
-        onRequestClose={() => setShowAccountPicker(false)}
+        animationType="none"
+        statusBarTranslucent
+        onRequestClose={() => closeDrawer()}
       >
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' }}>
-          <TouchableOpacity style={{ flex: 1 }} activeOpacity={1} onPress={() => setShowAccountPicker(false)} />
-          <View style={{ backgroundColor: colors.bgCard, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 30, maxHeight: '80%' }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 18, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }}>
-              <Text style={{ color: colors.textPrimary, fontSize: 17, fontWeight: '700' }}>Select Account</Text>
-              <TouchableOpacity onPress={() => setShowAccountPicker(false)}>
-                <Ionicons name="close" size={24} color={colors.textMuted} />
+        <View style={{ flex: 1, flexDirection: 'row' }}>
+          <Animated.View
+            style={{
+              width: drawerWidth,
+              backgroundColor: colors.bgPrimary,
+              paddingTop: insets.top + 10,
+              transform: [{ translateX: drawerX }],
+              shadowColor: '#000',
+              shadowOffset: { width: 2, height: 0 },
+              shadowOpacity: 0.25,
+              shadowRadius: 12,
+              elevation: 16,
+            }}
+          >
+            {/* Header */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: 18,
+                paddingBottom: 16,
+                borderBottomWidth: StyleSheet.hairlineWidth,
+                borderBottomColor: colors.border,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Image
+                  source={require('../../assets/logo.png')}
+                  style={{ width: 28, height: 28, borderRadius: 6 }}
+                  resizeMode="contain"
+                />
+                <Text style={{ fontSize: 17, fontWeight: '800', letterSpacing: -0.3 }}>
+                  <Text style={{ color: colors.textPrimary }}>TrustEdge</Text>
+                  <Text style={{ color: colors.primary }}>FX</Text>
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => closeDrawer()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={{ maxHeight: 460 }}>
-              {ctx.accounts && ctx.accounts.length > 0 ? (
-                <>
-                  <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 6 }}>
-                    Trading Accounts
-                  </Text>
-                  {ctx.accounts.map((account) => {
-                    const aid = account.id || account._id;
-                    const isActive = !ctx.isChallengeMode && (ctx.selectedAccount?.id === aid || ctx.selectedAccount?._id === aid);
-                    const demo = isDemoTradingAccount(account);
-                    return (
-                      <TouchableOpacity
-                        key={aid}
-                        activeOpacity={0.85}
-                        onPress={() => {
-                          ctx.setIsChallengeMode(false);
-                          switchToAccount(account);
-                        }}
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          paddingHorizontal: 18,
-                          paddingVertical: 14,
-                          borderBottomWidth: StyleSheet.hairlineWidth,
-                          borderBottomColor: colors.border,
-                          backgroundColor: isActive ? colors.accent + '10' : 'transparent',
-                          borderLeftWidth: 3,
-                          borderLeftColor: isActive ? colors.accent : 'transparent',
-                        }}
-                      >
-                        <View style={{
-                          width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
-                          backgroundColor: isActive ? colors.accent + '25' : colors.bgSecondary,
-                        }}>
-                          <Ionicons name="briefcase" size={18} color={isActive ? colors.accent : colors.textMuted} />
-                        </View>
-                        <View style={{ flex: 1, marginLeft: 12 }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>
-                              {account.account_number || account.accountId || String(aid).slice(0, 8)}
-                            </Text>
-                            <View style={{
-                              paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3,
-                              backgroundColor: demo ? colors.warning + '25' : colors.success + '25',
-                            }}>
-                              <Text style={{
-                                fontSize: 8, fontWeight: '800',
-                                color: demo ? colors.warning : colors.success,
-                              }}>
-                                {demo ? 'DEMO' : 'LIVE'}
-                              </Text>
-                            </View>
-                          </View>
-                          <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>
-                            {account.account_group?.name || account.accountTypeId?.name || account.accountType || 'Standard'}
-                            {' • 1:' + (String(account.leverage || '').replace(/^1:/, '') || '100')}
-                          </Text>
-                        </View>
-                        <View style={{ alignItems: 'flex-end' }}>
-                          <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>
-                            ${Number(account.balance || 0).toFixed(2)}
-                          </Text>
-                          {isActive && (
-                            <Ionicons name="checkmark-circle" size={16} color={colors.accent} style={{ marginTop: 2 }} />
-                          )}
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </>
-              ) : null}
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingVertical: 6 }}>
+              {sideMenuItems.map((item) => (
+                <TouchableOpacity
+                  key={item.screen + item.label}
+                  onPress={() => openSideMenuItem(item)}
+                  activeOpacity={0.7}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 14,
+                    paddingHorizontal: 18,
+                    paddingVertical: 14,
+                  }}
+                >
+                  <Ionicons name={item.icon} size={20} color={colors.primary} />
+                  <Text style={{ fontSize: 15, fontWeight: '600', color: colors.textPrimary }}>{item.label}</Text>
+                </TouchableOpacity>
+              ))}
 
-              {ctx.challengeAccounts && ctx.challengeAccounts.length > 0 && (
-                <>
-                  <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6, paddingHorizontal: 18, paddingTop: 18, paddingBottom: 6 }}>
-                    Challenge Accounts
-                  </Text>
-                  {ctx.challengeAccounts.filter((a) => a.status === 'ACTIVE').map((account) => {
-                    const aid = account.id || account._id;
-                    const isActive = ctx.isChallengeMode && (ctx.selectedChallengeAccount?.id === aid || ctx.selectedChallengeAccount?._id === aid);
-                    return (
-                      <TouchableOpacity
-                        key={aid}
-                        activeOpacity={0.85}
-                        onPress={() => {
-                          ctx.setIsChallengeMode(true);
-                          ctx.setSelectedChallengeAccount(account);
-                          setShowAccountPicker(false);
-                        }}
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          paddingHorizontal: 18,
-                          paddingVertical: 14,
-                          borderBottomWidth: StyleSheet.hairlineWidth,
-                          borderBottomColor: colors.border,
-                          backgroundColor: isActive ? '#1a73e815' : 'transparent',
-                          borderLeftWidth: 3,
-                          borderLeftColor: isActive ? '#1a73e8' : 'transparent',
-                        }}
-                      >
-                        <View style={{
-                          width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
-                          backgroundColor: isActive ? '#1a73e830' : '#1a73e815',
-                        }}>
-                          <Ionicons name="trophy" size={18} color="#1a73e8" />
-                        </View>
-                        <View style={{ flex: 1, marginLeft: 12 }}>
-                          <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>{account.accountId}</Text>
-                          <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>
-                            {account.challengeId?.name || 'Challenge'} • Step {account.currentStep || 1}
-                          </Text>
-                        </View>
-                        <View style={{ alignItems: 'flex-end' }}>
-                          <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '700' }}>
-                            ${Number(account.currentBalance || account.balance || 0).toFixed(2)}
-                          </Text>
-                          {isActive && (
-                            <Ionicons name="checkmark-circle" size={16} color="#1a73e8" style={{ marginTop: 2 }} />
-                          )}
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </>
-              )}
+              {/* Theme toggle */}
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 14,
+                  paddingHorizontal: 18,
+                  paddingVertical: 14,
+                  borderTopWidth: StyleSheet.hairlineWidth,
+                  borderTopColor: colors.border,
+                  marginTop: 6,
+                }}
+              >
+                <Ionicons name={isDark ? 'moon' : 'sunny'} size={20} color={colors.primary} />
+                <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: colors.textPrimary }}>
+                  {isDark ? 'Dark Mode' : 'Light Mode'}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => toggleTheme && toggleTheme()}
+                  style={{
+                    width: 44,
+                    height: 26,
+                    borderRadius: 13,
+                    backgroundColor: isDark ? colors.primary : colors.border,
+                    padding: 3,
+                    alignItems: isDark ? 'flex-end' : 'flex-start',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: '#fff' }} />
+                </TouchableOpacity>
+              </View>
 
-              {(!ctx.accounts || ctx.accounts.length === 0) && (!ctx.challengeAccounts || ctx.challengeAccounts.length === 0) && (
-                <View style={{ padding: 30, alignItems: 'center' }}>
-                  <Ionicons name="wallet-outline" size={48} color={colors.textMuted} />
-                  <Text style={{ color: colors.textMuted, marginTop: 10 }}>No accounts available</Text>
-                </View>
-              )}
-            </ScrollView>
-
-            {/* Open new account CTA */}
-            <View style={{ padding: 16, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+              {/* Log Out */}
               <TouchableOpacity
                 onPress={() => {
-                  setShowAccountPicker(false);
-                  parentNav?.navigate('Accounts', { action: 'open' });
+                  closeDrawer(() => { if (ctx.logout) ctx.logout(); });
                 }}
+                activeOpacity={0.7}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 14,
+                  paddingHorizontal: 18,
+                  paddingVertical: 14,
+                  borderTopWidth: StyleSheet.hairlineWidth,
+                  borderTopColor: colors.border,
+                }}
+              >
+                <Ionicons name="log-out-outline" size={20} color={colors.error} />
+                <Text style={{ fontSize: 15, fontWeight: '700', color: colors.error }}>Log Out</Text>
+              </TouchableOpacity>
+            </ScrollView>
+
+            {/* Help footer */}
+            <View
+              style={{
+                padding: 16,
+                borderTopWidth: StyleSheet.hairlineWidth,
+                borderTopColor: colors.border,
+                backgroundColor: colors.bgCard,
+              }}
+            >
+              <Text style={{ fontSize: 13, fontWeight: '700', color: colors.textPrimary, marginBottom: 4 }}>
+                Need Help?
+              </Text>
+              <Text style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>
+                Contact our 24/7 support team
+              </Text>
+              <TouchableOpacity
+                onPress={() => openSideMenuItem({ screen: 'Support' })}
                 style={{
                   flexDirection: 'row',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  gap: 8,
-                  paddingVertical: 14,
-                  borderRadius: 12,
-                  backgroundColor: colors.accent,
+                  gap: 6,
+                  paddingVertical: 10,
+                  borderRadius: 8,
+                  borderWidth: 1,
+                  borderColor: colors.border,
                 }}
               >
-                <Ionicons name="add-circle-outline" size={20} color="#fff" />
-                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>Open New Account</Text>
+                <Ionicons name="headset-outline" size={16} color={colors.textPrimary} />
+                <Text style={{ fontSize: 13, fontWeight: '700', color: colors.textPrimary }}>Get Support</Text>
               </TouchableOpacity>
             </View>
-          </View>
+          </Animated.View>
+
+          {/* Right overlay tap-out */}
+          <Animated.View
+            style={{
+              flex: 1,
+              backgroundColor: '#000',
+              opacity: backdropOpacity.interpolate({ inputRange: [0, 1], outputRange: [0, 0.45] }),
+            }}
+          >
+            <TouchableOpacity
+              activeOpacity={1}
+              onPress={() => closeDrawer()}
+              style={{ flex: 1 }}
+            />
+          </Animated.View>
         </View>
       </Modal>
-
-      <View style={{ height: 100 }} />
-    </ScrollView>
+    </View>
   );
 };
 

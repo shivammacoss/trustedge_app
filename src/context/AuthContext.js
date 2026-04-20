@@ -1,5 +1,4 @@
-import React, { createContext, useState, useEffect, useRef } from 'react';
-import { AppState } from 'react-native';
+import React, { createContext, useState, useEffect } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { API_URL } from '../config';
 
@@ -9,31 +8,16 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(true);
-  const appStateRef = useRef(AppState.currentState);
-  const tokenCheckIntervalRef = useRef(null);
 
   useEffect(() => {
     loadStoredAuth();
-
-    // Check token when app comes to foreground
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-
-    // Periodic token check every 2 minutes
-    tokenCheckIntervalRef.current = setInterval(() => {
-      checkAndHandleTokenExpiry();
-    }, 120000);
-
-    return () => {
-      subscription?.remove();
-      if (tokenCheckIntervalRef.current) clearInterval(tokenCheckIntervalRef.current);
-    };
   }, []);
 
   const loadStoredAuth = async () => {
     try {
       const storedToken = await SecureStore.getItemAsync('token');
       const storedUser = await SecureStore.getItemAsync('user');
-      
+
       if (storedToken && storedUser) {
         setToken(storedToken);
         setUser(JSON.parse(storedUser));
@@ -42,34 +26,6 @@ export const AuthProvider = ({ children }) => {
       console.error('Error loading auth:', error);
     }
     setLoading(false);
-  };
-
-  const handleAppStateChange = async (nextAppState) => {
-    if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
-      // App came to foreground — check if token is still valid
-      await checkAndHandleTokenExpiry();
-    }
-    appStateRef.current = nextAppState;
-  };
-
-  const checkAndHandleTokenExpiry = async () => {
-    try {
-      const storedUser = await SecureStore.getItemAsync('user');
-      const storedToken = await SecureStore.getItemAsync('token');
-      if (!storedUser || !storedToken) return;
-
-      const parsed = JSON.parse(storedUser);
-      if (parsed.expires_at) {
-        const expiresAt = new Date(parsed.expires_at).getTime();
-        if (Date.now() >= expiresAt) {
-          // Token expired — force logout
-          console.log('[Auth] Token expired, logging out');
-          await logout();
-        }
-      }
-    } catch (e) {
-      console.error('[Auth] Token expiry check error:', e);
-    }
   };
 
   const login = async (email, password) => {

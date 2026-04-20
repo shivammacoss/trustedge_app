@@ -302,7 +302,11 @@ const NotificationsScreen = ({ navigation }) => {
                 return (
                   <TouchableOpacity 
                     key={notif._id} 
-                    style={[styles.notificationCard, { backgroundColor: colors.bgCard, borderColor: colors.border }, !notif.read && styles.unreadCard]}
+                    style={[
+                      styles.notificationCard,
+                      { backgroundColor: colors.bgCard, borderColor: colors.border },
+                      !notif.read && { backgroundColor: colors.primary + '12', borderColor: colors.primary + '40' },
+                    ]}
                     onPress={() => markAsRead(notif._id)}
                     activeOpacity={0.7}
                   >
@@ -405,9 +409,8 @@ const styles = StyleSheet.create({
     position: 'relative',
     overflow: 'hidden'
   },
-  unreadCard: { 
-    backgroundColor: '#0a1628',
-    borderColor: '#333333'
+  unreadCard: {
+    // Theme-aware: applied inline using colors.primary tint
   },
   notifContent: { 
     flexDirection: 'row', 
