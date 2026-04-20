@@ -28,6 +28,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import * as SecureStore from 'expo-secure-store';
+import * as Updates from 'expo-updates';
 import { API_URL, API_BASE_URL } from '../config';
 import { useTheme } from '../context/ThemeContext';
 import socketService from '../services/socketService';
@@ -5420,6 +5421,36 @@ const MoreTab = ({ navigation }) => {
   const ctx = React.useContext(TradingContext);
   const { colors, isDark, toggleTheme } = useTheme();
   const parentNav = navigation.getParent();
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  const handleCheckUpdate = async () => {
+    if (checkingUpdate) return;
+    if (__DEV__) {
+      Alert.alert('Dev mode', 'OTA updates only work in release/preview builds.');
+      return;
+    }
+    setCheckingUpdate(true);
+    try {
+      const res = await Updates.checkForUpdateAsync();
+      if (res?.isAvailable) {
+        await Updates.fetchUpdateAsync();
+        Alert.alert(
+          'Update available',
+          'A new update has been downloaded. Restart now to apply?',
+          [
+            { text: 'Later', style: 'cancel' },
+            { text: 'Restart', onPress: () => Updates.reloadAsync() },
+          ]
+        );
+      } else {
+        Alert.alert('Up to date', 'You are already on the latest version.');
+      }
+    } catch (e) {
+      Alert.alert('Update check failed', String(e?.message || e));
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   const menuItems = [
     { icon: 'book-outline', label: 'Orders', screen: 'OrderBook', isTab: false, color: colors.primary },
@@ -5463,13 +5494,36 @@ const MoreTab = ({ navigation }) => {
           </TouchableOpacity>
         ))}
 
+        {/* Check for Updates */}
+        <TouchableOpacity
+          style={[styles.moreMenuItem, { borderBottomColor: colors.border }]}
+          onPress={handleCheckUpdate}
+          disabled={checkingUpdate}
+          activeOpacity={0.7}
+        >
+          <View style={[styles.moreMenuIcon, { backgroundColor: `${colors.primary}20` }]}>
+            <Ionicons name="cloud-download-outline" size={20} color={colors.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.moreMenuItemText, { color: colors.textPrimary }]}>Check for Updates</Text>
+            <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>
+              {checkingUpdate ? 'Checking…' : `App version ${(Updates.runtimeVersion || '1.0.0')}`}
+            </Text>
+          </View>
+          {checkingUpdate ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          )}
+        </TouchableOpacity>
+
         {/* Dark/Light Mode Toggle */}
         <View style={[styles.themeToggleItem, { borderBottomColor: colors.border }]}>
           <View style={[styles.moreMenuIcon, { backgroundColor: `${colors.primary}20` }]}>
             <Ionicons name={isDark ? 'moon' : 'sunny'} size={20} color={colors.primary} />
           </View>
           <Text style={[styles.moreMenuItemText, { color: colors.textPrimary }]}>Dark Mode</Text>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.themeToggle, { backgroundColor: isDark ? colors.primary : colors.border }, isDark && styles.themeToggleActive]}
             onPress={toggleTheme}
           >
