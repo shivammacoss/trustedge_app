@@ -603,14 +603,24 @@ export default function SocialScreen({ navigation }) {
                         <Text style={[styles.pFee, { color: colors.textMuted }]}>Fee {p.performance_fee_pct}% · Min ${p.min_investment}</Text>
                       </View>
                       <TouchableOpacity
-                        style={[styles.copyOutlineBtn, { borderColor: accent }]}
+                        style={[
+                          styles.copyOutlineBtn,
+                          {
+                            borderColor: p.is_copying ? colors.success : accent,
+                            backgroundColor: p.is_copying ? `${colors.success}15` : 'transparent',
+                          },
+                        ]}
+                        disabled={p.is_copying}
                         onPress={(e) => {
                           e?.stopPropagation?.();
+                          if (p.is_copying) return;
                           setCopyTarget(p);
                           setCopyAmount(String(Math.max(p.min_investment || 100, 100)));
                         }}
                       >
-                        <Text style={{ color: accent, fontWeight: '700', fontSize: 12 }}>Copy</Text>
+                        <Text style={{ color: p.is_copying ? colors.success : accent, fontWeight: '700', fontSize: 12 }}>
+                          {p.is_copying ? 'Already Followed' : 'Follow'}
+                        </Text>
                       </TouchableOpacity>
                     </View>
                     <Text style={[styles.roi, { color: p.total_return_pct >= 0 ? colors.success : colors.error }]}>
@@ -1130,7 +1140,7 @@ export default function SocialScreen({ navigation }) {
                     setCopyAmount(String(Math.max(detail.min_investment || 100, 100)));
                   }}
                 >
-                  <Text style={styles.primaryBtnTxt}>{detail.is_copying ? 'Already copying' : 'Copy this trader'}</Text>
+                  <Text style={styles.primaryBtnTxt}>{detail.is_copying ? 'Already Followed' : 'Follow this trader'}</Text>
                 </TouchableOpacity>
               </ScrollView>
             ) : null}
