@@ -197,38 +197,20 @@ const IBScreen = ({ navigation, route }) => {
   };
 
   const handleWithdraw = async () => {
-    if (!withdrawAmount || parseFloat(withdrawAmount) <= 0) {
-      Alert.alert('Error', 'Please enter a valid amount');
-      return;
-    }
-    if (parseFloat(withdrawAmount) > (ibProfile?.ibWalletBalance || 0)) {
-      Alert.alert('Error', 'Insufficient balance');
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      const res = await fetch(`${API_URL}/ib/withdraw`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: user._id,
-          amount: parseFloat(withdrawAmount)
-        })
-      });
-      const data = await res.json();
-      if (data.status || data.success) {
-        Alert.alert('Success', data.message || 'Withdrawal request submitted');
-        setWithdrawAmount('');
-        setShowWithdrawModal(false);
-        fetchIBProfile();
-      } else {
-        Alert.alert('Error', data.message || 'Failed to withdraw');
-      }
-    } catch (e) {
-      Alert.alert('Error', 'Failed to process withdrawal');
-    }
-    setIsSubmitting(false);
+    Alert.alert(
+      'Withdraw IB Earnings',
+      'IB commissions are credited automatically to your main wallet. Please use Wallet → Withdraw to transfer funds out.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Open Wallet',
+          onPress: () => {
+            setShowWithdrawModal(false);
+            navigation?.navigate?.('Wallet');
+          },
+        },
+      ],
+    );
   };
 
   const copyReferralLink = async () => {

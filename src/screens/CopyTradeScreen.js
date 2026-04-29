@@ -112,13 +112,29 @@ const CopyTradeScreen = ({ navigation }) => {
     setLoadingMasters(true);
     try {
       const token = await SecureStore.getItemAsync('token');
-      const res = await fetch(`${API_URL}/social/masters`, {
+      const res = await fetch(`${API_URL}/social/leaderboard?per_page=50`, {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       });
       if (!res.ok) { setMasters([]); setLoadingMasters(false); return; }
       const data = await res.json();
-      const mastersList = data.items || data.masters || data || [];
-      setMasters(Array.isArray(mastersList) ? mastersList : []);
+      const items = Array.isArray(data?.items) ? data.items : [];
+      // Map gateway fields → legacy UI fields the screen renders
+      const mapped = items.map((m) => ({
+        ...m,
+        _id: m.id,
+        displayName: m.provider_name || 'Master',
+        approvedCommissionPercentage: Number(m.performance_fee_pct || 0),
+        stats: {
+          activeFollowers: Number(m.followers_count || 0),
+          winRate: 0,
+          totalTrades: 0,
+          totalProfitGenerated: 0,
+          totalReturnPct: Number(m.total_return_pct || 0),
+          maxDrawdownPct: Number(m.max_drawdown_pct || 0),
+          sharpeRatio: Number(m.sharpe_ratio || 0),
+        },
+      }));
+      setMasters(mapped);
     } catch (e) {
       console.warn('Error fetching masters:', e.message);
     }
@@ -129,12 +145,20 @@ const CopyTradeScreen = ({ navigation }) => {
     try {
       const token = await SecureStore.getItemAsync('token');
       if (!token) return;
-      const res = await fetch(`${API_URL}/social/subscriptions`, {
+      const res = await fetch(`${API_URL}/social/my-copies`, {
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
       });
       if (!res.ok) { setMySubscriptions([]); return; }
       const data = await res.json();
-      setMySubscriptions(data.items || data.subscriptions || data || []);
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const mapped = items.map((s) => ({
+        ...s,
+        _id: s.id,
+        masterId: s.master_id,
+        masterName: s.manager_name,
+        status: s.status,
+      }));
+      setMySubscriptions(mapped);
     } catch (e) {
       console.error('Error fetching subscriptions:', e);
     }
@@ -217,15 +241,19 @@ const CopyTradeScreen = ({ navigation }) => {
     setApplyingMaster(true);
     try {
       const token = await SecureStore.getItemAsync('token');
-      const res = await fetch(`${API_URL}/social/become-provider`, {
+      const fee = parseFloat(masterForm.requestedCommissionPercentage) || 10;
+      const params = new URLSearchParams({
+        master_type: 'signal_provider',
+        description: masterForm.description || '',
+        performance_fee_pct: String(fee),
+        management_fee_pct: '0',
+        min_investment: '100',
+        max_investors: '100',
+      });
+      const res = await fetch(`${API_URL}/social/become-provider?${params.toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({
-          display_name: masterForm.displayName,
-          description: masterForm.description,
-          account_id: accountId,
-          commission_percentage: parseFloat(masterForm.requestedCommissionPercentage) || 10
-        })
+        body: JSON.stringify({}),
       });
 
       const data = await res.json();
@@ -251,15 +279,22 @@ const CopyTradeScreen = ({ navigation }) => {
     setIsSubmitting(true);
     try {
       const token = await SecureStore.getItemAsync('token');
-      const res = await fetch(`${API_URL}/social/follow`, {
+      const masterId = selectedMaster.id || selectedMaster._id;
+      const amount = parseFloat(copyValue) || 0;
+      if (amount <= 0) {
+        Alert.alert('Error', 'Enter a copy amount greater than 0');
+        setIsSubmitting(false);
+        return;
+      }
+      const params = new URLSearchParams({
+        master_id: String(masterId),
+        account_id: String(selectedAccount),
+        amount: String(amount),
+      });
+      const res = await fetch(`${API_URL}/social/copy?${params.toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({
-          provider_id: selectedMaster.id || selectedMaster._id,
-          account_id: selectedAccount,
-          copy_mode: copyMode === 'FIXED_LOT' ? 'fixed_lot' : 'multiplier',
-          fixed_lot_size: parseFloat(copyValue) || 0.01
-        })
+        body: '{}',
       });
 
       const data = await res.json();
@@ -295,7 +330,7 @@ const CopyTradeScreen = ({ navigation }) => {
           onPress: async () => {
             try {
               const token = await SecureStore.getItemAsync('token');
-              const res = await fetch(`${API_URL}/social/unfollow/${subscriptionId}`, {
+              const res = await fetch(`${API_URL}/social/copy/${subscriptionId}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` }
               });

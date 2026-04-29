@@ -20,23 +20,30 @@ const TABS = [
 export default function PammScreen({ navigation }) {
   const { colors } = useTheme();
   const { t } = useI18n();
-  const { masters, allocations, summary, loading, refreshing, refresh, invest, withdrawAllocation } = usePamm();
+  const { masters, allocations, accounts, walletBalance, summary, loading, refreshing, refresh, invest, withdrawAllocation } = usePamm();
   const [tab, setTab] = useState('allocations');
   const [investModal, setInvestModal] = useState(null);
   const [amount, setAmount] = useState('');
+  const [accountId, setAccountId] = useState(null);
+  const [scaling, setScaling] = useState('100');
   const [submitting, setSubmitting] = useState(false);
 
   const handleInvest = useCallback(async () => {
     const num = parseFloat(amount);
     if (!num || num <= 0) { Alert.alert(t('common.error'), 'Enter a valid amount'); return; }
+    if (!accountId) { Alert.alert(t('common.error'), 'Select a live trading account'); return; }
+    if (num > walletBalance) { Alert.alert(t('common.error'), 'Insufficient wallet balance'); return; }
+    const min = Number(investModal?.min_investment || 0);
+    if (min > 0 && num < min) { Alert.alert(t('common.error'), `Minimum investment is $${min}`); return; }
     setSubmitting(true);
     try {
-      await invest(investModal.id, num);
+      const isMam = (investModal?.master_type || '').toLowerCase() === 'mamm';
+      await invest(investModal.id, accountId, num, isMam ? Number(scaling) || 100 : undefined);
       Alert.alert(t('common.success'), 'Investment successful');
-      setInvestModal(null); setAmount('');
+      setInvestModal(null); setAmount(''); setScaling('100');
     } catch (e) { Alert.alert(t('common.error'), e.message); }
     setSubmitting(false);
-  }, [amount, investModal, invest, t]);
+  }, [amount, investModal, invest, t, accountId, walletBalance, scaling]);
 
   const handleWithdraw = useCallback((alloc) => {
     Alert.alert(t('pamm.withdraw'), `Withdraw from ${alloc.manager_name}?`, [
@@ -112,7 +119,12 @@ export default function PammScreen({ navigation }) {
         </View>
       </View>
       {item.description ? <Text style={[s.desc, { color: colors.textSecondary }]} numberOfLines={2}>{item.description}</Text> : null}
-      <TouchableOpacity style={[s.investBtn, { backgroundColor: colors.primary }]} onPress={() => { setInvestModal(item); setAmount(''); }}>
+      <TouchableOpacity style={[s.investBtn, { backgroundColor: colors.primary }]} onPress={() => {
+        setInvestModal(item);
+        setAmount(String(item.min_investment || ''));
+        setScaling('100');
+        if (accounts.length > 0) setAccountId(accounts[0].id);
+      }}>
         <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>{t('pamm.investNow')}</Text>
       </TouchableOpacity>
     </View>
@@ -167,15 +179,52 @@ export default function PammScreen({ navigation }) {
             </View>
             {investModal && (
               <Text style={[s.modalSub, { color: colors.textSecondary }]}>
-                {investModal.manager_name} · Min ${investModal.min_investment || 100}
+                {investModal.manager_name} · Min ${investModal.min_investment || 100} · Wallet ${walletBalance.toFixed(2)}
               </Text>
             )}
+            <Text style={[s.inputLabel, { color: colors.textMuted }]}>Live Trading Account</Text>
+            <View style={[s.input, { backgroundColor: colors.bgSecondary, borderColor: colors.border, padding: 0, marginBottom: 16 }]}>
+              {accounts.length === 0 ? (
+                <Text style={{ color: colors.error, padding: 14, fontSize: 13 }}>No live account — open one first</Text>
+              ) : (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', padding: 6 }}>
+                  {accounts.map((a) => {
+                    const active = accountId === a.id;
+                    return (
+                      <TouchableOpacity
+                        key={a.id}
+                        onPress={() => setAccountId(a.id)}
+                        style={{
+                          paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, margin: 4,
+                          backgroundColor: active ? colors.primary : colors.bgPrimary,
+                          borderWidth: 1, borderColor: active ? colors.primary : colors.border,
+                        }}
+                      >
+                        <Text style={{ color: active ? '#fff' : colors.textPrimary, fontSize: 12, fontWeight: '600' }}>
+                          {a.account_number || a.id.slice(0, 8)}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
             <Text style={[s.inputLabel, { color: colors.textMuted }]}>{t('pamm.investAmount')}</Text>
             <TextInput
               style={[s.input, { backgroundColor: colors.bgSecondary, color: colors.textPrimary, borderColor: colors.border }]}
               value={amount} onChangeText={(t) => { if (t === '' || /^\d*\.?\d*$/.test(t)) setAmount(t); }}
               placeholder="0.00" placeholderTextColor={colors.textMuted} keyboardType="decimal-pad"
             />
+            {investModal && (investModal.master_type || '').toLowerCase() === 'mamm' && (
+              <>
+                <Text style={[s.inputLabel, { color: colors.textMuted }]}>Volume Scaling % (1–500)</Text>
+                <TextInput
+                  style={[s.input, { backgroundColor: colors.bgSecondary, color: colors.textPrimary, borderColor: colors.border }]}
+                  value={scaling} onChangeText={(t) => { if (t === '' || /^\d{0,3}$/.test(t)) setScaling(t); }}
+                  placeholder="100" placeholderTextColor={colors.textMuted} keyboardType="number-pad"
+                />
+              </>
+            )}
             <TouchableOpacity
               style={[s.confirmBtn, { backgroundColor: colors.primary, opacity: submitting ? 0.6 : 1 }]}
               onPress={handleInvest} disabled={submitting}
